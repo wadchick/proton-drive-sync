@@ -122,9 +122,10 @@ Item {
   }
 
   function openExternal(target) {
-    if (!target || openProc.running) return
-    openProc.command = ["xdg-open", String(target)]
-    openProc.running = true
+    if (!target) return
+    // Detached: xdg-open can become the long-lived app process (a fresh
+    // browser or file manager), which would otherwise block later clicks.
+    Quickshell.execDetached(["xdg-open", String(target)])
   }
 
   FileView {
@@ -152,7 +153,6 @@ Item {
   }
 
   Process { id: signInProc }
-  Process { id: openProc }
 
   Timer {
     interval: root.panelOpen || (root.status && (root.status.state === "syncing" || root.status.state === "scanning")) ? 2000 : 5000
