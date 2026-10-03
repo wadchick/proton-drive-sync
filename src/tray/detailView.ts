@@ -78,12 +78,12 @@ export function applySnapshot(doc: Document, data: DetailData): void {
     const focused = existing !== null && doc.activeElement === existing;
     if (existing === null) {
       el.innerHTML =
-        '<h2>' + esc(title) + ' <span data-count></span></h2>' +
+        '<div class="section-head"><h2>' + esc(title) + ' <span data-count></span></h2>' +
         '<div class="toolbar" data-toolbar>' +
         '<input data-filter type="search" aria-label="' + esc(title) + ' filter">' +
         '<button type="button" class="btn" data-prev>Previous</button>' +
-        '<button type="button" class="btn" data-next>Next</button>' +
-        '<span data-pager class="pager"></span></div>' +
+        '<button type="button" class="btn" data-next>Next</button></div></div>' +
+        '<p data-pager class="pager"></p>' +
         '<div class="scroll" data-rows></div>';
       const created = el.querySelector('[data-filter]');
       const goPrev = el.querySelector('[data-prev]');
@@ -93,19 +93,28 @@ export function applySnapshot(doc: Document, data: DetailData): void {
       if (goNext !== null) goNext.addEventListener('click', () => { view.detailNav?.(id, 1); });
     }
     const count = el.querySelector('[data-count]');
-    if (count !== null) count.textContent = String(meta.total);
+    if (count !== null) count.textContent = '(' + String(meta.total) + ')';
     const pager = el.querySelector('[data-pager]');
-    if (pager !== null) pager.textContent = meta.filtered === 0 ? '0' : String(meta.from) + '–' + String(meta.to) + ' of ' + String(meta.filtered);
+    // No range to show for an empty list: the line is hidden rather than reading 0.
+    if (pager instanceof HTMLElement) {
+      pager.hidden = meta.filtered === 0;
+      pager.textContent = meta.filtered === 0 ? '' : String(meta.from) + '–' + String(meta.to) + ' of ' + String(meta.filtered);
+    }
     const prev = el.querySelector('[data-prev]');
     const next = el.querySelector('[data-next]');
-    if (prev instanceof HTMLButtonElement) prev.disabled = meta.page <= 1;
-    if (next instanceof HTMLButtonElement) next.disabled = meta.page >= meta.pages;
+    // Nothing to filter or page through: the controls are disabled and the heading dims.
+    const empty = meta.total === 0;
+    el.classList.toggle('empty', empty);
+    if (prev instanceof HTMLButtonElement) prev.disabled = empty || meta.page <= 1;
+    if (next instanceof HTMLButtonElement) next.disabled = empty || meta.page >= meta.pages;
     const input = el.querySelector('[data-filter]');
+    if (input instanceof HTMLInputElement) input.disabled = empty;
     if (input instanceof HTMLInputElement && !focused && input.value !== meta.query) input.value = meta.query;
     const rows = el.querySelector('[data-rows]');
     if (rows !== null) rows.innerHTML = body;
   };
-  const emptyBody = (meta: PageWindow<unknown>): string => (meta.total === 0 ? '<p class="empty">none</p>' : '<p class="empty">nothing matches</p>');
+  // An empty section shows nothing; only a filter that hides every item says so.
+  const emptyBody = (meta: PageWindow<unknown>): string => (meta.total === 0 ? '' : '<p class="empty">nothing matches</p>');
   const side = (value: unknown): string => {
     const json = '<details><summary>JSON</summary><pre>' + esc(JSON.stringify(value, null, 2)) + '</pre></details>';
     if (typeof value !== 'object' || value === null) return esc(JSON.stringify(value)) + json;
@@ -134,16 +143,28 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   };
 
   set('state', s.state.replace(/_/g, ' '));
-  set('reason', s.reason ?? '');
+  // Paused needs no explanation: the sync switch already shows it.
+  set('reason', s.state === 'paused' ? '' : s.reason ?? '');
   const progress = s.progress;
   let glance = '';
   if (progress !== null && progress.total > 0 && s.state === 'syncing') glance = 'Sync (' + String(progress.done) + '/' + String(progress.total) + ')';
   if (progress !== null && progress.total > 0 && s.state === 'paused') glance = 'Paused (' + String(progress.done) + '/' + String(progress.total) + ')';
   set('glance', glance);
-  const primary = s.state === 'paused' ? 'act-resume' : s.state === 'needs_login' || s.state === 'stopped' || s.state === 'error' || s.state === 'offline' ? 'act-sync' : 'act-pause';
-  for (const id of ['act-pause', 'act-resume', 'act-sync']) {
-    const button = doc.getElementById(id);
-    if (button !== null) button.classList.toggle('primary', id === primary);
+  // Sync now is the call to action only when sync needs a nudge.
+  const syncButton = doc.getElementById('act-sync');
+  if (syncButton !== null) syncButton.classList.toggle('primary', s.state === 'needs_login' || s.state === 'stopped' || s.state === 'error' || s.state === 'offline');
+  // Pause stops all syncing in the engine (sync-now included), so the button is off while paused.
+  if (syncButton instanceof HTMLButtonElement) {
+    syncButton.disabled = s.state === 'paused';
+    syncButton.title = s.state === 'paused' ? 'Resume sync to sync now' : '';
+  }
+  // The switch is on while syncing is allowed; flipping it pauses or resumes.
+  const toggle = doc.getElementById('sync-toggle');
+  if (toggle !== null) {
+    const on = s.state !== 'paused';
+    toggle.setAttribute('aria-checked', on ? 'true' : 'false');
+    toggle.setAttribute('title', on ? 'Sync is on. Click to pause' : 'Sync is paused. Click to resume');
+    toggle.setAttribute('onclick', on ? "act('pause')" : "act('resume')");
   }
   const flags = doc.getElementById('flags');
   if (flags !== null) {
@@ -170,11 +191,12 @@ export function applySnapshot(doc: Document, data: DetailData): void {
       heldEl.hidden = false;
       if (heldEl.querySelector('[data-rows]') === null) {
         heldEl.innerHTML =
-          '<div class="warn"><h2>Held plan <span data-count></span></h2><p><strong>Confirmation required:</strong> <span data-reason></span></p>' +
+          '<div class="warn"><div class="section-head"><h2>Held plan <span data-count></span></h2>' +
           '<div class="toolbar"><input data-filter type="search" aria-label="Held plan filter">' +
           '<button type="button" class="btn" data-prev>Previous</button>' +
-          '<button type="button" class="btn" data-next>Next</button>' +
-          '<span data-pager class="pager"></span></div><div class="scroll" data-rows></div>' +
+          '<button type="button" class="btn" data-next>Next</button></div></div>' +
+          '<p data-pager class="pager"></p>' +
+          '<p><strong>Confirmation required:</strong> <span data-reason></span></p><div class="scroll" data-rows></div>' +
           '<p class="actions"><button type="button" class="btn primary" data-confirm>Proceed</button><button type="button" class="btn" data-reject>Reject</button></p></div>';
         const heldFilter = heldEl.querySelector('[data-filter]');
         const heldGoPrev = heldEl.querySelector('[data-prev]');
@@ -193,13 +215,18 @@ export function applySnapshot(doc: Document, data: DetailData): void {
       const heldInput = heldEl.querySelector('[data-filter]');
       const heldFocused = heldInput !== null && doc.activeElement === heldInput;
       const heldCount = heldEl.querySelector('[data-count]');
-      if (heldCount !== null) heldCount.textContent = String(heldPage.total);
+      if (heldCount !== null) heldCount.textContent = '(' + String(heldPage.total) + ')';
       const heldPager = heldEl.querySelector('[data-pager]');
-      if (heldPager !== null) heldPager.textContent = heldPage.filtered === 0 ? '0' : String(heldPage.from) + '–' + String(heldPage.to) + ' of ' + String(heldPage.filtered);
+      if (heldPager instanceof HTMLElement) {
+        heldPager.hidden = heldPage.filtered === 0;
+        heldPager.textContent = heldPage.filtered === 0 ? '' : String(heldPage.from) + '–' + String(heldPage.to) + ' of ' + String(heldPage.filtered);
+      }
       const heldPrev = heldEl.querySelector('[data-prev]');
       const heldNext = heldEl.querySelector('[data-next]');
-      if (heldPrev instanceof HTMLButtonElement) heldPrev.disabled = heldPage.page <= 1;
-      if (heldNext instanceof HTMLButtonElement) heldNext.disabled = heldPage.page >= heldPage.pages;
+      const heldEmpty = heldPage.total === 0;
+      if (heldPrev instanceof HTMLButtonElement) heldPrev.disabled = heldEmpty || heldPage.page <= 1;
+      if (heldNext instanceof HTMLButtonElement) heldNext.disabled = heldEmpty || heldPage.page >= heldPage.pages;
+      if (heldInput instanceof HTMLInputElement) heldInput.disabled = heldEmpty;
       if (heldInput instanceof HTMLInputElement && !heldFocused && heldInput.value !== heldPage.query) heldInput.value = heldPage.query;
       const heldRows = heldEl.querySelector('[data-rows]');
       if (heldRows !== null) {
@@ -265,6 +292,26 @@ async function refresh() {
   const response = await fetch(base + '/api/state');
   applySnapshot(document, await response.json());
 }
+async function refreshTheme() {
+  try {
+    const response = await fetch(base + '/api/theme');
+    const theme = await response.json();
+    const css = String(theme.css ?? '');
+    const style = document.getElementById('omarchy-theme');
+    if (style !== null && style.textContent !== css) style.textContent = css;
+    document.documentElement.classList.toggle('omarchy', css !== '');
+    const icon = encodeURIComponent(String(theme.icon ?? ''));
+    const img = document.getElementById('title-icon');
+    if (img !== null && img.dataset.icon !== icon) {
+      img.dataset.icon = icon;
+      img.hidden = icon === '';
+      if (icon !== '') img.src = 'icon/folder?v=' + icon;
+    }
+  } catch {
+    // Keep the current look; the next tick retries.
+  }
+}
 refresh();
-window.__detailRefresh = setInterval(refresh, 2000);`;
+window.__detailRefresh = setInterval(refresh, 2000);
+window.__detailTheme = setInterval(refreshTheme, 2000);`;
 }

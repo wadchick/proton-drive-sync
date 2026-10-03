@@ -1,5 +1,8 @@
 // @vitest-environment happy-dom
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { EngineHarness } from '../testing/engineHarness.js';
@@ -29,12 +32,15 @@ function httpGet(url: string): Promise<{ status: number; body: string }> {
 
 let h: EngineHarness;
 let server: DetailPageServer;
+let themeDir: string;
 beforeEach(() => {
   h = EngineHarness.create();
+  themeDir = mkdtempSync(join(tmpdir(), 'pds-theme-'));
 });
 afterEach(async () => {
   await server.close();
   await h.dispose();
+  rmSync(themeDir, { recursive: true, force: true });
 });
 
 describe('detail page after a sync', () => {
@@ -65,29 +71,37 @@ describe('detail page after a sync', () => {
     expect(document.getElementById('lines')?.textContent).toContain('Last sync:');
     expect(document.getElementById('lines')?.textContent).toContain('Files: 2 on this computer, 2 on Proton, 2 in sync');
     expect(document.getElementById('lines')?.textContent).not.toContain('synced');
-    expect(document.getElementById('proton-documents')?.textContent).toContain('none');
+    expect(document.getElementById('proton-documents')?.querySelector('[data-rows]')?.innerHTML).toBe('');
     expect(document.getElementById('proton-documents')?.textContent).not.toContain('one.txt');
   });
 
   it('serves the page behind the run token and 404s an unknown token', async () => {
     await h.start();
     await h.waitFor(['idle']);
-    server = new DetailPageServer(h.live.controlTarget);
+    server = new DetailPageServer(h.live.controlTarget, join(themeDir, 'colors.toml'), [join(themeDir, 'no-icons')]);
     await server.listen();
 
     const ok = await httpGet(server.url);
     expect(ok.status).toBe(200);
-    // The served page carries the tested renderer, the card colors, and the library section.
+    // The served page carries the tested renderer, the page colors, and the library section.
     expect(ok.body).toContain('id="lines"');
     expect(ok.body).toContain('id="proton-documents"');
     expect(ok.body).toContain('id="glance"');
     expect(ok.body).toContain('id="action-error"');
     expect(ok.body).toContain('function applySnapshot');
     expect(ok.body).toContain('border-radius');
-    for (const color of ['#cdfae4', '#d0d8fc', '#fcfdfe', '#2c3343', '#2cd1ec', '#42aefc']) expect(ok.body).toContain(color);
+    // No Omarchy theme on disk: the page keeps its own look.
+    expect(ok.body).toContain('<html lang="en">');
+    // No icon theme either: the title icon stays hidden and its route 404s.
+    expect(ok.body).toMatch(/<img[^>]+id="title-icon"[^>]+hidden>/);
+    expect((await httpGet(`${server.url}icon/folder`)).status).toBe(404);
+    expect(ok.body).toContain('<style id="omarchy-theme"></style>');
+    for (const color of ['#cdfae4', '#d0d8fc', '#2c3343', '#2cd1ec', '#42aefc']) expect(ok.body).toContain(color);
     expect(ok.body).not.toMatch(/<link[^>]+stylesheet/i);
+    // Control widths may be a per-side list, which the border shorthand rejects (no border at all).
+    expect(ok.body).not.toMatch(/border:\s*var\(--ctl-border-width\)/);
     expect(ok.body).not.toMatch(/<script[^>]+src=/i);
-    const order = ['id="held"', 'id="conflicts"', 'id="quarantine"', 'id="transfers"', 'id="lines"', 'id="proton-documents"', 'id="recycle"'];
+    const order = ['id="act-sync"', 'id="lines"', 'id="held"', 'id="conflicts"', 'id="quarantine"', 'id="transfers"', 'id="proton-documents"', 'id="recycle"'];
     let at = -1;
     for (const id of order) {
       const next = ok.body.indexOf(id);
@@ -97,5 +111,31 @@ describe('detail page after a sync', () => {
 
     const bad = await httpGet(server.url.replace(server.token, 'deadbeef'));
     expect(bad.status).toBe(404);
+  });
+
+  it('follows the Omarchy theme on disk, live', async () => {
+    await h.start();
+    await h.waitFor(['idle']);
+    const colors = join(themeDir, 'colors.toml');
+    writeFileSync(colors, 'mode = "dark"\naccent = "#81a1c1"\nbackground = "#2e3440"\nforeground = "#d8dee9"\n');
+    const icons = join(themeDir, 'icons');
+    mkdirSync(join(icons, 'Adwaita', 'scalable', 'places'), { recursive: true });
+    writeFileSync(join(icons, 'Adwaita', 'scalable', 'places', 'folder.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    server = new DetailPageServer(h.live.controlTarget, colors, [icons]);
+    await server.listen();
+
+    const page = await httpGet(server.url);
+    expect(page.body).toContain('<html lang="en" class="omarchy">');
+    expect(page.body).toContain('--om-background: #2e3440;');
+    expect(page.body).toMatch(/<img[^>]+id="title-icon"[^>]+src="icon\/folder"/);
+    expect(page.body).not.toMatch(/<img[^>]+id="title-icon"[^>]+hidden>/);
+    const icon = await httpGet(`${server.url}icon/folder`);
+    expect(icon.status).toBe(200);
+    expect(icon.body).toContain('<svg');
+
+    writeFileSync(colors, 'mode = "light"\naccent = "#1e66f5"\nbackground = "#eff1f5"\nforeground = "#4c4f69"\n');
+    const theme = JSON.parse((await httpGet(`${server.url}api/theme`)).body) as { css: string };
+    expect(theme.css).toContain('color-scheme: light;');
+    expect(theme.css).toContain('--om-accent: #1e66f5;');
   });
 });
