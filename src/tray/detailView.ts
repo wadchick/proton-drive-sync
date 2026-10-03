@@ -11,6 +11,10 @@ export interface DetailData {
   conflicts: { id: number; relPath: string; kind: string; local: unknown; remote: unknown }[];
   quarantine: { id: number; relPath: string | null; nodeUid: string | null; reason: string }[];
   recycle: { bucket: number; relPath: string }[];
+  /** The configured sync pair, when the server knows it. */
+  roots?: { local: string; remote: string } | null;
+  /** The system's date locale (BCP 47); absent or null uses the browser's. */
+  locale?: string | null;
 }
 
 /**
@@ -41,6 +45,10 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   host.__detailUi ??= { actionError: '', sections: {} };
   const ui = host.__detailUi;
 
+  // Dates and counts follow the system locale the server reports, not the browser's.
+  const locale = data.locale ?? undefined;
+  const when = (ms: number): string => new Date(ms).toLocaleString(locale);
+  const num = (n: number): string => n.toLocaleString(locale);
   const esc = (v: unknown): string => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] ?? c);
   const js = (v: string): string => v.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const set = (id: string, text: string): void => {
@@ -123,7 +131,7 @@ export function applySnapshot(doc: Document, data: DetailData): void {
     if (typeof record['name'] === 'string') bits.push(record['name']);
     if (typeof record['size'] === 'number') bits.push(String(record['size']) + ' B');
     const mtime = record['mtimeMs'] ?? record['mtime'];
-    if (typeof mtime === 'number') bits.push(new Date(mtime).toISOString());
+    if (typeof mtime === 'number') bits.push(when(mtime));
     if (typeof record['sha1'] === 'string' && record['sha1'] !== '') bits.push(record['sha1'].slice(0, 8));
     return esc(bits.length > 0 ? bits.join(' · ') : 'record') + json;
   };
@@ -174,7 +182,29 @@ export function applySnapshot(doc: Document, data: DetailData): void {
     flags.innerHTML = notes.map((note) => '<span class="note">' + esc(note) + '</span>').join('');
   }
   const lines = doc.getElementById('lines');
-  if (lines !== null) lines.innerHTML = s.summaryLines.map((line) => '<p class="reading">' + esc(line) + '</p>').join('');
+  if (lines !== null) {
+    // Label/value pairs, two to a row like the Wi-Fi panel; "--" until there is a value.
+    // Each half is its own grid inside two equal columns, so the halves stay the same
+    // width whatever their labels; every row is one line, so the rows still line up.
+    const pair = (k: string, v: string): string => '<span class="k">' + esc(k) + '</span><span class="v" title="' + esc(v) + '">' + esc(v) + '</span>';
+    const gap = '<span class="gap"></span>';
+    const c = s.counts;
+    const p = s.pending;
+    // Rows as [left, right]: each side's path and file count, a blank row, then the activity.
+    const roots = data.roots ?? null;
+    const rows: [string, string][] = roots === null ? [] : [[pair('Local path', roots.local), pair('Proton Drive path', roots.remote)]];
+    rows.push([pair('Local files', num(c.localFiles)), pair('Proton Drive files', num(c.remoteFiles))], [gap, gap]);
+    rows.push(
+      [pair('Last sync', s.lastSuccessfulSyncAt === null ? '--' : when(s.lastSuccessfulSyncAt)), pair('Files copied last sync', s.lastRunFilesCopied === null ? '--' : num(s.lastRunFilesCopied))],
+      [pair('Last full sync', s.lastFullSyncAt === null ? '--' : when(s.lastFullSyncAt)), pair('Pending', p.uploads + p.downloads + p.other === 0 ? 'None' : num(p.uploads) + ' up, ' + num(p.downloads) + ' down, ' + num(p.other) + ' other')],
+      [pair('Files in sync', num(c.pairedFiles)), pair('Folders in sync', num(c.pairedFolders))],
+    );
+    if (c.onlyLocal > 0 || c.onlyRemote > 0) rows.push([pair('Only on this computer', num(c.onlyLocal)), pair('Only on Proton', num(c.onlyRemote))]);
+    const half = (side: 0 | 1): string => '<div class="half">' + rows.map((row) => row[side]).join('') + '</div>';
+    // A note too long for half the width gets a full-width row of its own.
+    const docs = c.protonDocuments > 0 ? '<div class="stats-wide">' + pair('Proton documents', num(c.protonDocuments) + ' on Proton only (Docs and Sheets stay in the browser)') + '</div>' : '';
+    lines.innerHTML = '<div class="stats">' + half(0) + half(1) + '</div>' + docs;
+  }
   const actionError = doc.getElementById('action-error');
   if (actionError !== null) {
     actionError.textContent = ui.actionError;
@@ -263,7 +293,7 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   const recycle = windowOf('recycle', data.recycle, (row) => row.relPath);
   const recycleRows = recycle.shown.map((row) => {
     const iso = new Date(row.bucket).toISOString();
-    return '<tr><td><time datetime="' + esc(iso) + '">' + esc(new Date(row.bucket).toLocaleString()) + ' ' + esc(iso) + '</time></td><td>' + esc(row.relPath) + '</td></tr>';
+    return '<tr><td><time datetime="' + esc(iso) + '">' + esc(when(row.bucket)) + '</time></td><td>' + esc(row.relPath) + '</td></tr>';
   }).join('');
   paint('recycle', 'Recycle bin', recycle.filtered === 0 ? emptyBody(recycle) : '<table><tr><th>Recycled at</th><th>Path</th></tr>' + recycleRows + '</table>', recycle);
 }

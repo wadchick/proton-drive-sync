@@ -33,6 +33,12 @@ function el(id: string): HTMLElement {
   return node;
 }
 
+/** The value shown beside a stats label. */
+function stat(label: string): string | null {
+  const key = Array.from(el('lines').querySelectorAll('.stats .k')).find((k) => k.textContent === label);
+  return key?.nextElementSibling?.textContent ?? null;
+}
+
 function control<T extends Element>(id: string, selector: string, kind: new () => T): T {
   const node = el(id).querySelector(selector);
   if (!(node instanceof kind)) throw new Error(`missing ${selector} in #${id}`);
@@ -50,23 +56,45 @@ describe('applySnapshot', () => {
       state: 'idle',
       counts: { baseline: 5, localFiles: 5, remoteFiles: 4, pairedFiles: 5, pairedFolders: 0, protonDocuments: 0, onlyLocal: 0, onlyRemote: 0 },
       lastSuccessfulSyncAt: 1_700_000_000_000,
+      lastRunFilesCopied: 2,
       summaryLines: ['In sync', 'Last sync: 2023-11-14T22:13:20.000Z, 2 files copied', 'Files: 5 on this computer, 4 on Proton, 5 in sync'],
       protonDocumentPaths: [],
     });
     const data: DetailData = {
       status,
-      conflicts: [{ id: 1, relPath: 'c.txt', kind: 'content', local: { size: 1 }, remote: { size: 2 } }],
+      conflicts: [{ id: 1, relPath: 'c.txt', kind: 'content', local: { size: 1, mtimeMs: 1_700_000_000_000 }, remote: { size: 2 } }],
       quarantine: [],
       recycle: [{ bucket: 1_700_000_000_000, relPath: 'old.txt' }],
+      roots: { local: '/home/u/Drive', remote: '/my-files/Sync' },
+      locale: 'en-US',
     };
+    const shown = new Date(1_700_000_000_000).toLocaleString('en-US');
 
     applySnapshot(document, data);
 
     expect(el('state').textContent).toBe('idle');
-    expect(el('lines').querySelectorAll('.reading')).toHaveLength(3);
-    expect(el('lines').textContent).toContain('Last sync: 2023-11-14T22:13:20.000Z, 2 files copied');
-    expect(el('lines').textContent).toContain('Files: 5 on this computer, 4 on Proton, 5 in sync');
+    // Stats are label/value pairs, dates in the system locale, with the sync pair's paths.
+    expect(stat('Last sync')).toBe(shown);
+    expect(stat('Files copied last sync')).toBe('2');
+    expect(stat('Last full sync')).toBe('--');
+    // Last full sync sits under Last sync on the left; Pending under Files copied on the right.
+    const keys = (side: number): (string | null)[] => Array.from(el('lines').querySelectorAll('.stats > .half')[side]?.querySelectorAll('.k') ?? []).map((k) => k.textContent);
+    expect(keys(0)).toEqual(['Local path', 'Local files', 'Last sync', 'Last full sync', 'Files in sync']);
+    expect(keys(1)).toEqual(['Proton Drive path', 'Proton Drive files', 'Files copied last sync', 'Pending', 'Folders in sync']);
+    expect(stat('Local files')).toBe('5');
+    expect(stat('Proton Drive files')).toBe('4');
+    expect(stat('Files in sync')).toBe('5');
+    expect(stat('Proton Drive path')).toBe('/my-files/Sync');
+    expect(stat('Local path')).toBe('/home/u/Drive');
+    // Two halves: paths and file counts lead (local left, Proton right), then a blank row, then the activity.
+    const halves = Array.from(el('lines').querySelectorAll('.stats > .half')).map((h) =>
+      Array.from(h.children).map((n) => (n.className === 'gap' ? '|' : n.textContent)));
+    expect(halves).toHaveLength(2);
+    expect(halves[0]?.slice(0, 7)).toEqual(['Local path', '/home/u/Drive', 'Local files', '5', '|', 'Last sync', shown]);
+    expect(halves[1]?.slice(0, 7)).toEqual(['Proton Drive path', '/my-files/Sync', 'Proton Drive files', '4', '|', 'Files copied last sync', '2']);
+    expect(el('lines').textContent).not.toContain('2023-11-14T');
     expect(el('lines').textContent).not.toContain('synced');
+    expect(el('conflicts').textContent).toContain(shown);
     expect(el('proton-documents').querySelector('[data-rows]')?.innerHTML).toBe('');
     expect(el('conflicts').innerHTML).toContain('c.txt');
     expect(el('conflicts').textContent).toContain('1 B');
@@ -75,7 +103,7 @@ describe('applySnapshot', () => {
     expect(el('conflicts').innerHTML).toContain("choice:'keep_remote'");
     expect(el('conflicts').innerHTML).toContain("choice:'keep_both'");
     const recycled = el('recycle').querySelector('time');
-    expect(recycled?.textContent).toContain('2023-11-14T22:13:20.000Z');
+    expect(recycled?.textContent).toBe(shown);
     expect(recycled?.getAttribute('datetime')).toBe('2023-11-14T22:13:20.000Z');
     expect(el('recycle').innerHTML).toContain('old.txt');
     expect(el('quarantine').querySelector('[data-rows]')?.innerHTML).toBe('');
@@ -142,12 +170,13 @@ describe('applySnapshot', () => {
     const syncing = statusWith({
       state: 'syncing',
       progress: { done: 34, total: 5685 },
-      summaryLines: ['Last sync: 2023-11-14T22:13:20.000Z, 2 files copied'],
+      lastSuccessfulSyncAt: 1_700_000_000_000,
+      lastRunFilesCopied: 2,
     });
     applySnapshot(document, dataFor(syncing));
     expect(el('glance').textContent).toBe(glanceText(syncing));
     expect(el('glance').textContent).toBe('Sync (34/5685)');
-    expect(el('lines').textContent).toContain('2 files copied');
+    expect(stat('Files copied last sync')).toBe('2');
     expect(el('flags').textContent).not.toContain('Dry run');
 
     const paused = statusWith({ state: 'paused', progress: { done: 34, total: 5685 }, dryRun: true, degraded: true });
@@ -156,6 +185,17 @@ describe('applySnapshot', () => {
     expect(el('glance').textContent).toBe('Paused (34/5685)');
     expect(el('flags').textContent).toContain('Dry run');
     expect(el('flags').textContent).toContain('The event stream is degraded');
+  });
+
+  it('formats dates in the locale it is given, not the browser\'s', () => {
+    fixture();
+    const status = statusWith({ lastSuccessfulSyncAt: 1_700_000_000_000, lastRunFilesCopied: 1_234 });
+    applySnapshot(document, { ...dataFor(status), locale: 'en-GB' });
+    expect(stat('Last sync')).toBe(new Date(1_700_000_000_000).toLocaleString('en-GB'));
+    applySnapshot(document, { ...dataFor(status), locale: 'de-DE' });
+    expect(stat('Files copied last sync')).toBe('1.234');
+    // No paths known: no path rows.
+    expect(stat('Local path')).toBeNull();
   });
 
   it('pages a long Proton document list, filters it, and keeps that place across a refresh', () => {

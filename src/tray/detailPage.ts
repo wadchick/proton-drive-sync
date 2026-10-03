@@ -14,16 +14,55 @@ import type { ControlTarget } from '../engine/control.js';
 import { clientScript } from './detailView.js';
 import { defaultIconRoots, omarchyColorsPath, omarchyThemeCss, readOmarchyTheme, resolveFolderIcon, type ThemeIcon } from './omarchyTheme.js';
 
+export interface DetailPageOptions {
+  /** The Omarchy theme's colors.toml; its directory also holds shell.toml and icons.theme. */
+  themePath?: string;
+  /** Directories holding icon themes, searched in order. */
+  iconRoots?: string[];
+  /** The configured sync pair, shown in the stats. */
+  roots?: { local: string; remote: string } | null;
+  /** BCP 47 tag dates are formatted with; null leaves it to the browser. */
+  locale?: string | null;
+}
+
+/**
+ * The system's date and time locale, as POSIX resolves it: LC_ALL, then
+ * LC_TIME, then LANG ("en_GB.UTF-8" becomes "en-GB"). Null for C/POSIX or
+ * anything Intl does not know, which leaves formatting to the browser.
+ */
+export function systemLocale(env: NodeJS.ProcessEnv = process.env): string | null {
+  for (const key of ['LC_ALL', 'LC_TIME', 'LANG']) {
+    const value = env[key];
+    if (value === undefined || value === '') continue;
+    const tag = (value.split('.')[0] ?? '').split('@')[0]?.replace(/_/g, '-') ?? '';
+    if (tag === '' || tag === 'C' || tag === 'POSIX') return null;
+    try {
+      return Intl.DateTimeFormat.supportedLocalesOf([tag])[0] ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 export class DetailPageServer {
   private server: Server | null = null;
   readonly token = randomBytes(16).toString('hex');
   private port = 0;
+  private readonly themePath: string;
+  private readonly iconRoots: string[];
+  private readonly roots: { local: string; remote: string } | null;
+  private readonly locale: string | null;
 
   constructor(
     private readonly target: ControlTarget,
-    private readonly themePath: string = omarchyColorsPath(),
-    private readonly iconRoots: string[] = defaultIconRoots(),
-  ) {}
+    options: DetailPageOptions = {},
+  ) {
+    this.themePath = options.themePath ?? omarchyColorsPath();
+    this.iconRoots = options.iconRoots ?? defaultIconRoots();
+    this.roots = options.roots ?? null;
+    this.locale = options.locale === undefined ? systemLocale() : options.locale;
+  }
 
   get url(): string {
     return `http://127.0.0.1:${String(this.port)}/${this.token}/`;
@@ -88,6 +127,8 @@ export class DetailPageServer {
           conflicts: this.target.listConflicts(),
           quarantine: this.target.listQuarantine(),
           recycle: this.target.listRecycle().filter((r) => r.kind === 'file'),
+          roots: this.roots,
+          locale: this.locale,
         });
         return;
       }
@@ -183,6 +224,8 @@ function renderPage(themeCss: string, icon: string): string {
   return `<!doctype html><html lang="en"${themeCss === '' ? '' : ' class="omarchy"'}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proton Drive Sync</title>
 <style>
 :root {
+  --title-icon-h: 3.2rem;
+  --title-icon-y: -0.53rem;
   --pds-mint: #cdfae4;
   --pds-lavender: #d0d8fc;
   --pds-ink: #2c3343;
@@ -197,7 +240,8 @@ function renderPage(themeCss: string, icon: string): string {
   --heading: var(--pds-ink);
   --line: var(--pds-line);
   --divider: var(--pds-line);
-  --pill-bg: #e7f7ff;
+  --state-fg: var(--pds-muted);
+  --stat-label: var(--pds-muted);
   --ctl-bg: #fff;
   --btn-bg: var(--ctl-bg);
   --ctl-hover: #f3f7fc;
@@ -242,7 +286,10 @@ html.omarchy {
   --heading: var(--om-accent);
   --line: color-mix(in srgb, var(--om-foreground) 12%, transparent);
   --divider: var(--om-muted, color-mix(in srgb, var(--om-foreground) 30%, var(--om-background)));
-  --pill-bg: color-mix(in srgb, var(--om-foreground) 18%, transparent);
+  /* The shell's dim text: Qt.darker(foreground, 1.4). */
+  --state-fg: color-mix(in srgb, var(--om-foreground) 71%, black);
+  /* The Wi-Fi panel's InfoLabel: foreground at 60% opacity. */
+  --stat-label: color-mix(in srgb, var(--om-foreground) 60%, transparent);
   /* --ctl-* fills, borders and widths come from the theme's shell.toml [controls].
      Buttons are unfilled at rest, like the shell's bordered buttons. */
   --btn-bg: transparent;
@@ -272,11 +319,15 @@ body {
   background: var(--page-bg);
 }
 .wrap { max-width: 960px; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
-/* text-box trims the title's box to its baseline, so the badge's bottom edge
-   sits on the bottom of the letters (browsers without it use the line box). */
-h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.02em; text-box: trim-end cap alphabetic; }
-/* Title on the left, state badge on the right. */
-.title-icon { height: 1.15em; width: auto; vertical-align: -0.16em; margin-right: .4em; }
+/* Header like a shell panel hero: folder icon, then the title with the engine
+   state under it in the shell's caption style. text-box trims both lines to
+   their capitals so the icon can be sized to span exactly from just above the
+   title to the bottom of the state line. */
+h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.02em; text-box: trim-both cap alphabetic; }
+.title-block { display: flex; align-items: flex-start; gap: .55rem; min-width: 0; }
+.title-icon { flex: none; height: var(--title-icon-h); width: auto; margin-top: var(--title-icon-y); }
+.title-text { display: flex; flex-direction: column; gap: .65rem; }
+.state { font-size: .833em; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--state-fg); line-height: 1; text-box: trim-both cap alphabetic; }
 /* Sync on/off switch, drawn like the shell's ToggleSwitch: normal track when off,
    selected fill and knob when on, a hover ring around it, 120ms slide. */
 .title-side { display: flex; align-items: center; gap: .9rem; }
@@ -296,7 +347,7 @@ h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.02em; text-box: trim-end c
 .switch[aria-checked="true"] .knob { left: calc(100% - 19px + var(--ctl-selected-border-right)); background: var(--knob-on); }
 .switch:hover { outline: 1px solid var(--ctl-hover-border); outline-offset: 5px; }
 .switch:focus-visible { outline: 1px solid var(--accent); outline-offset: 5px; }
-.title-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; margin: 0 0 .7rem; }
+.title-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: 0 0 .9rem; }
 /* Section heading on the left, filter/pager on the right; the heading is trimmed to
    its cap height so the tops of its letters line up with the tops of the controls. */
 .section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: .6rem 1rem; margin: 0; }
@@ -307,14 +358,24 @@ h2 { transition: opacity 120ms; }
 /* No boxes: each section sits under a divider. */
 main > section:not([hidden]) { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--divider); }
 .status-row, .actions, .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .6rem; }
-.pill, .btn, .note, .toolbar input { border-radius: var(--radius-pill); }
-/* The state badge is as tall as the sync switch beside it. */
-.pill { display: inline-flex; align-items: center; height: 22px; line-height: 1; background: var(--pill-bg); font-weight: 650; padding: 0 .75rem; }
+.btn, .note, .toolbar input { border-radius: var(--radius-pill); }
 #glance { font-weight: 650; color: var(--accent); }
 #reason, .pager, .empty, .muted, th { color: var(--muted); }
 th { font-weight: 600; }
-.reading { margin: .2rem 0; }
+/* The progress/reason line and the flags take no room when they have nothing to say. */
+.status-row:has(#glance:empty):has(#reason:empty), #flags:empty { display: none; }
 #lines:not(:empty) { margin-top: .9rem; }
+/* Stats laid out like the top of the shell's Wi-Fi panel: label/value pairs in
+   two equal halves, labels dimmed, values right-aligned, small body size. */
+.stats, .stats-wide { font-size: .917em; }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 20px; }
+.stats .half, .stats-wide { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 20px; row-gap: 4px; align-content: start; }
+.stats-wide { margin-top: 4px; }
+.stats .k, .stats-wide .k { color: var(--stat-label); white-space: nowrap; }
+.stats .v, .stats-wide .v { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* A blank row: one line plus the row gap after it adds up to one full row. */
+.stats .gap { grid-column: 1 / -1; height: calc(1lh - 4px); }
+@media (max-width: 560px) { .stats { grid-template-columns: minmax(0, 1fr); row-gap: 4px; } }
 .btn {
   /* Longhands: the reserved width can be a per-side list, which the border shorthand rejects. */
   border-style: solid;
@@ -359,7 +420,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-siz
 <style id="omarchy-theme">${themeCss}</style></head><body>
 <main class="wrap">
 <header>
-<div class="title-row"><h1><img class="title-icon" id="title-icon" src="icon/folder" alt="" data-icon="${encodeURIComponent(icon)}"${icon === '' ? ' hidden' : ''}>Proton Drive Sync</h1><div class="title-side"><span class="pill" id="state"></span><button type="button" role="switch" class="switch" id="sync-toggle" aria-checked="true" aria-label="Sync"><span class="knob"></span></button></div></div>
+<div class="title-row"><div class="title-block"><img class="title-icon" id="title-icon" src="icon/folder" alt="" data-icon="${encodeURIComponent(icon)}"${icon === '' ? ' hidden' : ''}><div class="title-text"><h1>Proton Drive Sync</h1><span class="state" id="state"></span></div></div><div class="title-side"><button type="button" role="switch" class="switch" id="sync-toggle" aria-checked="true" aria-label="Sync"><span class="knob"></span></button></div></div>
 <p class="status-row"><span id="glance"></span><span id="reason"></span></p>
 <p id="flags"></p>
 <p class="actions"><button type="button" class="btn" id="act-sync" onclick="act('sync')">Sync now</button></p>

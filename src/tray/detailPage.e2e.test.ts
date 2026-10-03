@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { EngineHarness } from '../testing/engineHarness.js';
-import { DetailPageServer } from './detailPage.js';
+import { DetailPageServer, systemLocale } from './detailPage.js';
 import { applySnapshot, type DetailData } from './detailView.js';
 
 /** A plain HTTP GET via node:http (happy-dom's fetch blocks cross-origin 127.0.0.1 requests). */
@@ -68,8 +68,13 @@ describe('detail page after a sync', () => {
     applySnapshot(document, data);
 
     expect(document.getElementById('state')?.textContent).toBe('idle');
-    expect(document.getElementById('lines')?.textContent).toContain('Last sync:');
-    expect(document.getElementById('lines')?.textContent).toContain('Files: 2 on this computer, 2 on Proton, 2 in sync');
+    const stat = (label: string): string | null =>
+      Array.from(document.querySelectorAll('#lines .stats .k')).find((k) => k.textContent === label)?.nextElementSibling?.textContent ?? null;
+    expect(stat('Last sync')).not.toBe('--');
+    expect(stat('Local files')).toBe('2');
+    expect(stat('Proton Drive files')).toBe('2');
+    expect(stat('Files in sync')).toBe('2');
+    expect(data.locale).toBe(systemLocale());
     expect(document.getElementById('lines')?.textContent).not.toContain('synced');
     expect(document.getElementById('proton-documents')?.querySelector('[data-rows]')?.innerHTML).toBe('');
     expect(document.getElementById('proton-documents')?.textContent).not.toContain('one.txt');
@@ -78,7 +83,7 @@ describe('detail page after a sync', () => {
   it('serves the page behind the run token and 404s an unknown token', async () => {
     await h.start();
     await h.waitFor(['idle']);
-    server = new DetailPageServer(h.live.controlTarget, join(themeDir, 'colors.toml'), [join(themeDir, 'no-icons')]);
+    server = new DetailPageServer(h.live.controlTarget, { themePath: join(themeDir, 'colors.toml'), iconRoots: [join(themeDir, 'no-icons')] });
     await server.listen();
 
     const ok = await httpGet(server.url);
@@ -121,7 +126,7 @@ describe('detail page after a sync', () => {
     const icons = join(themeDir, 'icons');
     mkdirSync(join(icons, 'Adwaita', 'scalable', 'places'), { recursive: true });
     writeFileSync(join(icons, 'Adwaita', 'scalable', 'places', 'folder.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
-    server = new DetailPageServer(h.live.controlTarget, colors, [icons]);
+    server = new DetailPageServer(h.live.controlTarget, { themePath: colors, iconRoots: [icons] });
     await server.listen();
 
     const page = await httpGet(server.url);
@@ -137,5 +142,20 @@ describe('detail page after a sync', () => {
     const theme = JSON.parse((await httpGet(`${server.url}api/theme`)).body) as { css: string };
     expect(theme.css).toContain('color-scheme: light;');
     expect(theme.css).toContain('--om-accent: #1e66f5;');
+  });
+});
+
+describe('systemLocale', () => {
+  it('follows LC_ALL, then LC_TIME, then LANG, as POSIX does', () => {
+    expect(systemLocale({ LANG: 'en_US.UTF-8' })).toBe('en-US');
+    expect(systemLocale({ LANG: 'en_US.UTF-8', LC_TIME: 'en_GB.UTF-8' })).toBe('en-GB');
+    expect(systemLocale({ LC_ALL: 'de_DE.UTF-8', LC_TIME: 'en_GB.UTF-8' })).toBe('de-DE');
+    expect(systemLocale({ LC_ALL: '', LANG: 'fr_FR.UTF-8@euro' })).toBe('fr-FR');
+  });
+
+  it('leaves C, POSIX and unset to the browser', () => {
+    expect(systemLocale({ LANG: 'C.UTF-8' })).toBeNull();
+    expect(systemLocale({ LC_ALL: 'POSIX' })).toBeNull();
+    expect(systemLocale({})).toBeNull();
   });
 });
