@@ -79,20 +79,22 @@ export function applySnapshot(doc: Document, data: DetailData): void {
       to: fromIndex + shown.length,
     };
   };
-  const paint = (id: string, title: string, body: string, meta: PageWindow<unknown>): void => {
+  const paint = (id: string, title: string, body: string, meta: PageWindow<unknown>, intro: string): void => {
     const el = doc.getElementById(id);
     if (el === null) return;
     const existing = el.querySelector('input[data-filter]');
     const focused = existing !== null && doc.activeElement === existing;
     if (existing === null) {
       el.innerHTML =
-        '<div class="section-head"><h2>' + esc(title) + ' <span data-count></span></h2>' +
+        '<div class="section-head"><h2>' + esc(title) + ' <span data-count></span></h2></div>' +
+        // Body: what the section holds, then filter and paging with the range under them, then the list.
+        '<div class="section-body"><p class="intro" data-intro></p>' +
         '<div class="toolbar" data-toolbar>' +
         '<input data-filter type="search" aria-label="' + esc(title) + ' filter">' +
         '<button type="button" class="btn" data-prev>Previous</button>' +
-        '<button type="button" class="btn" data-next>Next</button></div></div>' +
+        '<button type="button" class="btn" data-next>Next</button></div>' +
         '<p data-pager class="pager"></p>' +
-        '<div class="scroll" data-rows></div>';
+        '<div class="scroll" data-rows></div></div>';
       const created = el.querySelector('[data-filter]');
       const goPrev = el.querySelector('[data-prev]');
       const goNext = el.querySelector('[data-next]');
@@ -100,6 +102,8 @@ export function applySnapshot(doc: Document, data: DetailData): void {
       if (goPrev !== null) goPrev.addEventListener('click', () => { view.detailNav?.(id, -1); });
       if (goNext !== null) goNext.addEventListener('click', () => { view.detailNav?.(id, 1); });
     }
+    const introLine = el.querySelector('[data-intro]');
+    if (introLine !== null) introLine.textContent = intro;
     const count = el.querySelector('[data-count]');
     if (count !== null) count.textContent = '(' + String(meta.total) + ')';
     const pager = el.querySelector('[data-pager]');
@@ -110,9 +114,10 @@ export function applySnapshot(doc: Document, data: DetailData): void {
     }
     const prev = el.querySelector('[data-prev]');
     const next = el.querySelector('[data-next]');
-    // Nothing to filter or page through: the controls are disabled and the heading dims.
+    // Nothing to filter or page through: the controls are hidden (and disabled).
     const empty = meta.total === 0;
-    el.classList.toggle('empty', empty);
+    const toolbar = el.querySelector('[data-toolbar]');
+    if (toolbar instanceof HTMLElement) toolbar.hidden = empty;
     if (prev instanceof HTMLButtonElement) prev.disabled = empty || meta.page <= 1;
     if (next instanceof HTMLButtonElement) next.disabled = empty || meta.page >= meta.pages;
     const input = el.querySelector('[data-filter]');
@@ -200,10 +205,11 @@ export function applySnapshot(doc: Document, data: DetailData): void {
       [pair('Files in sync', num(c.pairedFiles)), pair('Folders in sync', num(c.pairedFolders))],
     );
     if (c.onlyLocal > 0 || c.onlyRemote > 0) rows.push([pair('Only on this computer', num(c.onlyLocal)), pair('Only on Proton', num(c.onlyRemote))]);
+    // Skipped files (Proton Docs and Sheets) take the left half; a blank cell keeps the
+    // right half's rows level with it.
+    if (c.protonDocuments > 0) rows.push([pair('Files skipped', num(c.protonDocuments)), '<span class="k">&nbsp;</span><span class="v"></span>']);
     const half = (side: 0 | 1): string => '<div class="half">' + rows.map((row) => row[side]).join('') + '</div>';
-    // A note too long for half the width gets a full-width row of its own.
-    const docs = c.protonDocuments > 0 ? '<div class="stats-wide">' + pair('Proton documents', num(c.protonDocuments) + ' on Proton only (Docs and Sheets stay in the browser)') + '</div>' : '';
-    lines.innerHTML = '<div class="stats">' + half(0) + half(1) + '</div>' + docs;
+    lines.innerHTML = '<div class="stats">' + half(0) + half(1) + '</div>';
   }
   const actionError = doc.getElementById('action-error');
   if (actionError !== null) {
@@ -268,14 +274,22 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   }
 
   const docs = windowOf('proton-documents', s.protonDocumentPaths, (path) => path);
-  paint('proton-documents', 'Proton documents', docs.filtered === 0 ? emptyBody(docs) : '<ul>' + docs.shown.map((path) => '<li>' + esc(path) + '</li>').join('') + '</ul>', docs);
+  // Proton documents live only on Proton, so their full path is under the Proton Drive folder.
+  const remoteRoot = data.roots ? data.roots.remote.replace(/\/+$/, '') + '/' : '';
+  const docRows = docs.shown.map((path) => {
+    const modified = (s.protonDocumentModifiedAt as Record<string, number> | undefined)?.[path];
+    return '<tr><td>' + (modified === undefined ? '--' : '<time datetime="' + esc(new Date(modified).toISOString()) + '">' + esc(when(modified)) + '</time>') + '</td><td>' + esc(remoteRoot + path) + '</td></tr>';
+  }).join('');
+  paint('proton-documents', 'Skipped', docs.filtered === 0 ? emptyBody(docs) : '<table><tr><th>Modified</th><th>Path</th></tr>' + docRows + '</table>', docs,
+    'Proton Docs and Sheets are skipped: they exist only on Proton and open in the browser, so there is no file to copy to this computer.');
 
   const transfers = windowOf('transfers', s.transfers, (row) => row.relPath);
   const transferRows = transfers.shown.map((row) => {
     const pct = row.total !== undefined && row.total > 0 ? Math.round((row.bytes / row.total) * 100) : 0;
     return '<tr><td>' + (row.kind === 'upload' ? '↑ upload' : '↓ download') + '</td><td>' + esc(row.relPath) + '</td><td><div class="bar"><div style="width:' + String(pct) + '%"></div></div></td><td>' + String(Math.round(row.speed / 1024)) + ' KiB/s</td></tr>';
   }).join('');
-  paint('transfers', 'Transfers', transfers.filtered === 0 ? emptyBody(transfers) : '<table><tr><th>Direction</th><th>Path</th><th>Progress</th><th>Speed</th></tr>' + transferRows + '</table>', transfers);
+  paint('transfers', 'Transfers', transfers.filtered === 0 ? emptyBody(transfers) : '<table><tr><th>Direction</th><th>Path</th><th>Progress</th><th>Speed</th></tr>' + transferRows + '</table>', transfers,
+    'Uploads and downloads in progress.');
 
   const conflicts = windowOf('conflicts', data.conflicts, (row) => row.relPath);
   const conflictRows = conflicts.shown.map((row) =>
@@ -283,19 +297,22 @@ export function applySnapshot(doc: Document, data: DetailData): void {
     '<button type="button" class="btn" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'keep_local'})\">Keep local</button>" +
     '<button type="button" class="btn" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'keep_remote'})\">Keep remote</button>" +
     '<button type="button" class="btn" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'keep_both'})\">Keep both</button></td></tr>").join('');
-  paint('conflicts', 'Conflicts', conflicts.filtered === 0 ? emptyBody(conflicts) : '<table><tr><th>Path</th><th>Kind</th><th>Local</th><th>Remote</th><th>Resolve</th></tr>' + conflictRows + '</table>', conflicts);
+  paint('conflicts', 'Conflicts', conflicts.filtered === 0 ? emptyBody(conflicts) : '<table><tr><th>Path</th><th>Kind</th><th>Local</th><th>Remote</th><th>Resolve</th></tr>' + conflictRows + '</table>', conflicts,
+    'Files changed on both sides since the last sync. Choose the version to keep, or keep both.');
 
   const quarantine = windowOf('quarantine', data.quarantine, (row) => row.relPath ?? '');
   const quarantineRows = quarantine.shown.map((row) =>
     '<tr><td>' + esc(row.relPath ?? '-') + '</td><td>' + esc(row.nodeUid ?? '-') + '</td><td>' + esc(row.reason) + '</td><td><button type="button" class="btn" onclick="act(\'release\', {id:' + String(row.id) + '})">Release</button></td></tr>').join('');
-  paint('quarantine', 'Quarantine', quarantine.filtered === 0 ? emptyBody(quarantine) : '<table><tr><th>Path</th><th>Node</th><th>Reason</th><th></th></tr>' + quarantineRows + '</table>', quarantine);
+  paint('quarantine', 'Quarantine', quarantine.filtered === 0 ? emptyBody(quarantine) : '<table><tr><th>Path</th><th>Node</th><th>Reason</th><th></th></tr>' + quarantineRows + '</table>', quarantine,
+    'Files sync stopped touching because a transfer failed its integrity check or its result was unclear after a crash. Release one to let sync handle it again.');
 
   const recycle = windowOf('recycle', data.recycle, (row) => row.relPath);
   const recycleRows = recycle.shown.map((row) => {
     const iso = new Date(row.bucket).toISOString();
     return '<tr><td><time datetime="' + esc(iso) + '">' + esc(when(row.bucket)) + '</time></td><td>' + esc(row.relPath) + '</td></tr>';
   }).join('');
-  paint('recycle', 'Recycle bin', recycle.filtered === 0 ? emptyBody(recycle) : '<table><tr><th>Recycled at</th><th>Path</th></tr>' + recycleRows + '</table>', recycle);
+  paint('recycle', 'Recycled', recycle.filtered === 0 ? emptyBody(recycle) : '<table><tr><th>Recycled at</th><th>Path</th></tr>' + recycleRows + '</table>', recycle,
+    'Local files moved aside instead of deleted or overwritten, kept in ' + (data.roots ? data.roots.local + '/.proton-sync/recycle' : 'the sync folder under .proton-sync/recycle') + '. Copy one back to restore it.');
 }
 
 /** The browser script for the served page: the tested renderer plus the fetch/refresh glue. */
@@ -318,9 +335,29 @@ async function act(name, body) {
   detailUi().actionError = message;
   await refresh();
 }
+// Each engine run serves the page at a new secret address, so a page left open across a
+// restart can no longer reach it. Say so instead of quietly showing old data.
+let missedRefreshes = 0;
+function setConnected(connected) {
+  const notice = document.getElementById('connection-lost');
+  if (notice !== null) notice.hidden = connected;
+  document.body.classList.toggle('stale', !connected);
+}
 async function refresh() {
-  const response = await fetch(base + '/api/state');
-  applySnapshot(document, await response.json());
+  let data;
+  try {
+    const response = await fetch(base + '/api/state');
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    data = await response.json();
+  } catch {
+    // Two misses in a row (about 4 seconds) before the notice, so one hiccup does not flash it.
+    missedRefreshes += 1;
+    if (missedRefreshes >= 2) setConnected(false);
+    return;
+  }
+  missedRefreshes = 0;
+  setConnected(true);
+  applySnapshot(document, data);
 }
 async function refreshTheme() {
   try {

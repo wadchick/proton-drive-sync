@@ -80,7 +80,7 @@ export class SyncEngine extends EventEmitter {
   private readonly ignoreMatcher: IgnoreMatcher;
   /** While file operations run, status publishes reuse this instead of walking the trees again. */
   private libraryFrozen = false;
-  private libraryCache: { counts: EngineStatus['counts']; protonDocumentPaths: string[] } | null = null;
+  private libraryCache: { counts: EngineStatus['counts']; protonDocumentPaths: string[]; protonDocumentModifiedAt: Record<string, number> } | null = null;
 
   constructor(private readonly deps: EngineDeps) {
     super();
@@ -117,6 +117,7 @@ export class SyncEngine extends EventEmitter {
       attention: this.computeAttention(),
       counts,
       protonDocumentPaths: this.libraryCache?.protonDocumentPaths ?? [],
+      protonDocumentModifiedAt: this.libraryCache?.protonDocumentModifiedAt ?? {},
     };
     return { ...live, summaryLines: summarize(live) };
   }
@@ -144,6 +145,7 @@ export class SyncEngine extends EventEmitter {
     for (const rel of remote.syncableFilePaths) if (!pairedFilePaths.has(rel)) onlyRemote++;
     this.libraryCache = {
       protonDocumentPaths: remote.protonDocumentPaths,
+      protonDocumentModifiedAt: remote.protonDocumentModifiedAt,
       counts: {
         baseline: kinds.file + kinds.dir,
         localFiles: localPaths.length,

@@ -117,6 +117,9 @@ describe('SyncEngine', () => {
       onlyRemote: 1,
     });
     expect(status.protonDocumentPaths).toEqual(['Agenda']);
+    // Each document carries its last modified time.
+    expect(Object.keys(status.protonDocumentModifiedAt)).toEqual(['Agenda']);
+    expect(status.protonDocumentModifiedAt['Agenda']).toBeGreaterThan(0);
     expect(status.summaryLines).toEqual(expect.arrayContaining([
       'Files: 2 on this computer, 4 on Proton, 2 in sync',
       'Only on this computer: 1 file',

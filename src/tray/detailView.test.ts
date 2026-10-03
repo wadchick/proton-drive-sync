@@ -95,6 +95,15 @@ describe('applySnapshot', () => {
     expect(el('lines').textContent).not.toContain('2023-11-14T');
     expect(el('lines').textContent).not.toContain('synced');
     expect(el('conflicts').textContent).toContain(shown);
+    // Proton documents show their full path under the Proton Drive folder.
+    applySnapshot(document, { ...data, status: { ...status, protonDocumentPaths: ['Notes/Agenda', 'Undated'], protonDocumentModifiedAt: { 'Notes/Agenda': 1_700_000_000_000 } } });
+    const docCells = Array.from(el('proton-documents').querySelectorAll('td')).map((td) => td.textContent);
+    expect(Array.from(el('proton-documents').querySelectorAll('th')).map((th) => th.textContent)).toEqual(['Modified', 'Path']);
+    expect(docCells).toEqual([shown, '/my-files/Sync/Notes/Agenda', '--', '/my-files/Sync/Undated']);
+    applySnapshot(document, data);
+    // Each section opens with a line saying what it holds; the recycle bin names its folder.
+    expect(el('recycle').querySelector('[data-intro]')?.textContent).toBe('Local files moved aside instead of deleted or overwritten, kept in /home/u/Drive/.proton-sync/recycle. Copy one back to restore it.');
+    for (const id of ['conflicts', 'quarantine', 'transfers', 'proton-documents']) expect(el(id).querySelector('[data-intro]')?.textContent).not.toBe('');
     expect(el('proton-documents').querySelector('[data-rows]')?.innerHTML).toBe('');
     expect(el('conflicts').innerHTML).toContain('c.txt');
     expect(el('conflicts').textContent).toContain('1 B');
@@ -137,7 +146,8 @@ describe('applySnapshot', () => {
     expect(el('state').textContent).not.toBe('');
     expect(el('proton-documents').querySelector('[data-rows]')?.innerHTML).toBe('');
     expect(el('transfers').querySelector('[data-rows]')?.innerHTML).toBe('');
-    // An empty section disables its filter and paging; the range sits on its own line.
+    // An empty section hides (and disables) its filter and paging; the range sits on its own line.
+    expect(control('transfers', '[data-toolbar]', HTMLElement).hidden).toBe(true);
     expect(control('transfers', '[data-filter]', HTMLInputElement).disabled).toBe(true);
     expect(control('transfers', '[data-prev]', HTMLButtonElement).disabled).toBe(true);
     expect(control('transfers', '[data-next]', HTMLButtonElement).disabled).toBe(true);
@@ -146,7 +156,6 @@ describe('applySnapshot', () => {
     expect(pager instanceof HTMLElement && pager.hidden).toBe(true);
     expect(pager?.textContent).toBe('');
     expect(el('transfers').querySelector('h2')?.textContent).toBe('Transfers (0)');
-    expect(el('transfers').classList.contains('empty')).toBe(true);
   });
 
   it('lists Proton document paths on the page and leaves them out of human CLI status', () => {
@@ -159,6 +168,8 @@ describe('applySnapshot', () => {
     applySnapshot(document, dataFor(status));
     expect(el('proton-documents').textContent).toContain('Notes/Agenda');
     expect(el('proton-documents').textContent).toContain('Notes/Budget');
+    // A table with a header, like the recycle bin.
+    expect(el('proton-documents').querySelector('th')?.textContent).toBe('Modified');
     const human = formatStatus(status).join('\n');
     expect(human).toContain('Proton documents: 2');
     expect(human).not.toContain('Notes/Agenda');
@@ -196,6 +207,12 @@ describe('applySnapshot', () => {
     expect(stat('Files copied last sync')).toBe('1.234');
     // No paths known: no path rows.
     expect(stat('Local path')).toBeNull();
+    // Skipped files: just the count, in the left half, only when there are some.
+    expect(stat('Files skipped')).toBeNull();
+    applySnapshot(document, dataFor(statusWith({ counts: { ...status.counts, protonDocuments: 3 } })));
+    expect(stat('Files skipped')).toBe('3');
+    const left = el('lines').querySelectorAll('.stats > .half')[0];
+    expect(Array.from(left?.querySelectorAll('.k') ?? []).map((k) => k.textContent)).toContain('Files skipped');
   });
 
   it('pages a long Proton document list, filters it, and keeps that place across a refresh', () => {
@@ -218,13 +235,13 @@ describe('applySnapshot', () => {
 
     const filter = control('proton-documents', '[data-filter]', HTMLInputElement);
     expect(filter.disabled).toBe(false);
-    expect(el('proton-documents').classList.contains('empty')).toBe(false);
+    expect(control('proton-documents', '[data-toolbar]', HTMLElement).hidden).toBe(false);
     filter.value = 'agenda';
     filter.dispatchEvent(new Event('input'));
     expect(el('proton-documents').textContent).toContain('Notes/Agenda');
     expect(el('proton-documents').textContent).toContain('1–1 of 1');
     // The heading counts every item, not just the ones the filter shows.
-    expect(el('proton-documents').querySelector('h2')?.textContent).toBe('Proton documents (30)');
+    expect(el('proton-documents').querySelector('h2')?.textContent).toBe('Skipped (30)');
     expect(el('proton-documents').textContent).not.toContain('notes/file-00');
     filter.value = 'no-such-path';
     filter.dispatchEvent(new Event('input'));
@@ -279,6 +296,31 @@ describe('clientScript', () => {
     await (window as unknown as { act: (name: string) => Promise<void> }).act('pause');
     expect(el('action-error').textContent).toBe('');
     expect(el('action-error').hidden).toBe(true);
+  });
+
+  it('says when the engine stops answering, and recovers when it answers again', async () => {
+    fixture();
+    document.body.insertAdjacentHTML('afterbegin', '<p id="connection-lost" hidden></p>');
+    let up = true;
+    vi.stubGlobal('fetch', (url: string) => {
+      if (!up) return Promise.reject(new TypeError('Failed to fetch'));
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(url.endsWith('/api/theme') ? { css: '' } : dataFor(statusWith({ state: 'idle' }))) });
+    });
+    window.eval(clientScript());
+    const refresh = (window as unknown as { refresh: () => Promise<void> }).refresh;
+    await refresh();
+    expect(el('connection-lost').hidden).toBe(true);
+    up = false;
+    // One miss is not enough to raise the notice; two are.
+    await refresh();
+    expect(el('connection-lost').hidden).toBe(true);
+    await refresh();
+    expect(el('connection-lost').hidden).toBe(false);
+    expect(document.body.classList.contains('stale')).toBe(true);
+    up = true;
+    await refresh();
+    expect(el('connection-lost').hidden).toBe(true);
+    expect(document.body.classList.contains('stale')).toBe(false);
   });
 
   it('follows a theme switch and drops the theme when it goes away', async () => {

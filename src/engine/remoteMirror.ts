@@ -92,8 +92,9 @@ export class RemoteMirror {
    * Non-trashed files, Proton document paths, and the other file paths.
    * A file under a trashed ancestor has no path and is still counted in `files`.
    */
-  library(): { files: number; protonDocumentPaths: string[]; syncableFilePaths: string[] } {
+  library(): { files: number; protonDocumentPaths: string[]; protonDocumentModifiedAt: Record<string, number>; syncableFilePaths: string[] } {
     const protonDocumentPaths: string[] = [];
+    const protonDocumentModifiedAt: Record<string, number> = {};
     const syncableFilePaths: string[] = [];
     let files = 0;
     for (const node of this.nodes.values()) {
@@ -101,12 +102,15 @@ export class RemoteMirror {
       files++;
       const rel = this.relPath(node);
       if (rel === null) continue;
-      if (node.isProtonDocument) protonDocumentPaths.push(rel);
-      else syncableFilePaths.push(rel);
+      if (node.isProtonDocument) {
+        protonDocumentPaths.push(rel);
+        // The content's own time when the saving app recorded one, else Proton's.
+        protonDocumentModifiedAt[rel] = (node.claimedModifiedAt ?? node.serverModifiedAt).getTime();
+      } else syncableFilePaths.push(rel);
     }
     protonDocumentPaths.sort();
     syncableFilePaths.sort();
-    return { files, protonDocumentPaths, syncableFilePaths };
+    return { files, protonDocumentPaths, protonDocumentModifiedAt, syncableFilePaths };
   }
 
   /** Root-relative path, or null when an ancestor is trashed or the chain is broken. */

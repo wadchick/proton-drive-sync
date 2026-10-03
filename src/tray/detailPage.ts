@@ -348,31 +348,28 @@ h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.02em; text-box: trim-both 
 .switch:hover { outline: 1px solid var(--ctl-hover-border); outline-offset: 5px; }
 .switch:focus-visible { outline: 1px solid var(--accent); outline-offset: 5px; }
 .title-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: 0 0 .9rem; }
-/* Section heading on the left, filter/pager on the right; the heading is trimmed to
-   its cap height so the tops of its letters line up with the tops of the controls. */
+/* The section heading row; the heading is trimmed to its cap height so spacing is
+   measured from the letters, not the line box. */
 .section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: .6rem 1rem; margin: 0; }
-h2 { font-size: 1.25rem; margin: 0; color: var(--heading); text-box: trim-both cap alphabetic; }
-/* A section with nothing in it recedes so the ones with items stand out. */
-section.empty h2 { opacity: .45; }
-h2 { transition: opacity 120ms; }
+h2 { font-size: 1.05rem; margin: 0; color: var(--heading); text-transform: uppercase; text-box: trim-both cap alphabetic; }
 /* No boxes: each section sits under a divider. */
 main > section:not([hidden]) { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--divider); }
 .status-row, .actions, .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .6rem; }
 .btn, .note, .toolbar input { border-radius: var(--radius-pill); }
 #glance { font-weight: 650; color: var(--accent); }
-#reason, .pager, .empty, .muted, th { color: var(--muted); }
-th { font-weight: 600; }
+#reason, .pager, .empty, .muted { color: var(--muted); }
+/* Column headers share the explanation lines' dimmed colour. */
+th { font-weight: 600; color: var(--stat-label); }
 /* The progress/reason line and the flags take no room when they have nothing to say. */
 .status-row:has(#glance:empty):has(#reason:empty), #flags:empty { display: none; }
 #lines:not(:empty) { margin-top: .9rem; }
 /* Stats laid out like the top of the shell's Wi-Fi panel: label/value pairs in
    two equal halves, labels dimmed, values right-aligned, small body size. */
-.stats, .stats-wide { font-size: .917em; }
-.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 20px; }
-.stats .half, .stats-wide { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 20px; row-gap: 4px; align-content: start; }
-.stats-wide { margin-top: 4px; }
-.stats .k, .stats-wide .k { color: var(--stat-label); white-space: nowrap; }
-.stats .v, .stats-wide .v { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.stats { font-size: .917em; }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 40px; }
+.stats .half { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 20px; row-gap: 4px; align-content: start; }
+.stats .k { color: var(--stat-label); white-space: nowrap; }
+.stats .v { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* A blank row: one line plus the row gap after it adds up to one full row. */
 .stats .gap { grid-column: 1 / -1; height: calc(1lh - 4px); }
 @media (max-width: 560px) { .stats { grid-template-columns: minmax(0, 1fr); row-gap: 4px; } }
@@ -398,8 +395,12 @@ th { font-weight: 600; }
 .btn.primary:hover:not(:disabled), .btn.primary:active:not(:disabled), .btn.primary:focus-visible { background: var(--primary-bg); border-color: var(--primary-bg); filter: brightness(1.08); }
 /* Disabled controls drop the fill and fade the border and text, so they read as off next to live ones. */
 .btn:disabled, .toolbar input:disabled { background: transparent; border-color: var(--ctl-off-border); color: var(--ctl-off-fg); cursor: default; }
-/* Spacing lives on what follows the heading row, so an empty section ends at its controls. */
-.pager { margin: .7rem 0 0; text-align: right; }
+/* A section's body: a line saying what it holds, then the controls on the right
+   with the range under them, then the list. */
+.intro { margin: .7rem 0 0; font-size: .917em; color: var(--stat-label); }
+.section-body .toolbar { justify-content: flex-end; margin-top: .6rem; }
+.pager { margin: .7rem 0 0; text-align: right; white-space: nowrap; }
+.section-body .pager { margin-top: .5rem; }
 .toolbar { margin: 0; }
 .toolbar input { border-style: solid; border-width: var(--ctl-border-width); border-color: var(--input-border); padding: .4rem .9rem; min-width: 12rem; color: var(--fg); background: var(--ctl-bg); font: inherit; }
 .scroll { overflow-x: auto; }
@@ -413,12 +414,16 @@ td:last-child, th:last-child { padding-right: 0; }
 .bar > div { height: 8px; background: var(--accent); border-radius: var(--radius-pill); }
 .warn { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius-box); padding: .8rem 1rem; }
 .banner { background: var(--danger-bg); color: var(--danger-fg); border: 1px solid var(--danger-border); border-radius: var(--radius-box); padding: .65rem 1rem; margin: 1rem 0 0; }
+/* Lost connection: the notice leads the page and the data that may be stale dims. */
+#connection-lost { margin: 0 0 1.25rem; }
+body.stale .title-row, body.stale .actions, body.stale #lines, body.stale main > section { opacity: .45; }
 .note { display: inline-block; background: var(--note-bg); padding: .15rem .65rem; }
 pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-size: .85rem; }
 [hidden] { display: none !important; }
 </style>
 <style id="omarchy-theme">${themeCss}</style></head><body>
 <main class="wrap">
+<p id="connection-lost" class="banner" role="alert" hidden>Lost connection to Proton Drive Sync, so the details below may be out of date. Reopen this page from the Proton Drive panel.</p>
 <header>
 <div class="title-row"><div class="title-block"><img class="title-icon" id="title-icon" src="icon/folder" alt="" data-icon="${encodeURIComponent(icon)}"${icon === '' ? ' hidden' : ''}><div class="title-text"><h1>Proton Drive Sync</h1><span class="state" id="state"></span></div></div><div class="title-side"><button type="button" role="switch" class="switch" id="sync-toggle" aria-checked="true" aria-label="Sync"><span class="knob"></span></button></div></div>
 <p class="status-row"><span id="glance"></span><span id="reason"></span></p>
