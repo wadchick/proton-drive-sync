@@ -30,4 +30,12 @@ describe('shell sources', () => {
     expect(panel).toContain('onClicked: root.service.signIn()');
     expect(panel).toContain('onClicked: root.service.submitSetup(root.localDraft, root.remoteDraft)');
   });
+
+  it('offers Open config immediately after Open details', () => {
+    const details = panel.indexOf('onClicked: root.service.openExternal(root.service.doctor.detailUrl)');
+    const config = panel.indexOf('onClicked: root.service.openExternal(root.service.doctor.configFile)');
+    expect(panel).toContain('Open config');
+    expect(details).toBeGreaterThan(-1);
+    expect(config).toBeGreaterThan(details);
+  });
 });

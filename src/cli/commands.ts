@@ -377,6 +377,7 @@ export interface DoctorReport {
   running: boolean;
   localRoot: string | null;
   remoteRoot: string | null;
+  configFile: string | null;
   detailUrl: string | null;
 }
 
@@ -389,6 +390,7 @@ export function doctorReport(fields: DoctorReport): DoctorReport {
     running: fields.running,
     localRoot: fields.localRoot,
     remoteRoot: fields.remoteRoot,
+    configFile: fields.configFile,
     detailUrl: fields.detailUrl,
   };
 }
@@ -438,6 +440,7 @@ export async function doctor(deps: CommandDeps, json: boolean): Promise<number> 
     running: await ControlClient.probe(deps.ctx.paths.controlSocket),
     localRoot: config?.localRoot ?? null,
     remoteRoot: config?.remoteRoot ?? null,
+    configFile: config !== null ? deps.ctx.paths.configFile : null,
     detailUrl: await runningDetailUrl(deps),
   });
   const human = [
@@ -447,6 +450,7 @@ export async function doctor(deps: CommandDeps, json: boolean): Promise<number> 
     `Running: ${report.running ? 'yes' : 'no'}`,
     `Local folder: ${report.localRoot ?? '-'}`,
     `Remote folder: ${report.remoteRoot ?? '-'}`,
+    `Config file: ${report.configFile ?? '-'}`,
     `Details: ${report.detailUrl ?? '-'}`,
   ];
   out(deps, json, human, report);

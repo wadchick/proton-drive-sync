@@ -215,6 +215,7 @@ describe('CLI', () => {
     expect(parsed['detailUrl']).toBeNull();
     expect(parsed['localRoot']).toBeNull();
     expect(parsed['remoteRoot']).toBeNull();
+    expect(parsed['configFile']).toBeNull();
     expect(stdout.join('\n')).not.toContain(secret);
     expect(parsed).not.toHaveProperty('session');
 
@@ -225,18 +226,28 @@ describe('CLI', () => {
       running: false,
       localRoot: null,
       remoteRoot: null,
+      configFile: null,
       detailUrl: null,
       session: secret,
     };
     const leaked = doctorReport(input);
     expect(JSON.stringify(leaked)).not.toContain(secret);
     expect(leaked.loggedIn).toBe(false);
+    expect(leaked.configFile).toBeNull();
 
     deps = makeDeps();
     deps.sessionPresent = () => Promise.resolve(false);
     stdout = [];
     expect(await dispatch(deps, parseCli(['doctor', '--json']))).toBe(0);
     expect((JSON.parse(stdout.at(-1) ?? '{}') as { loggedIn: boolean }).loggedIn).toBe(false);
+
+    loggedIn = true;
+    stdout = [];
+    expect(await cli('setup', root, '/my-files/Sync')).toBe(0);
+    stdout = [];
+    expect(await cli('doctor', '--json')).toBe(0);
+    const configured = JSON.parse(stdout.at(-1) ?? '{}') as { configFile: string | null };
+    expect(configured.configFile).toBe(deps.ctx.paths.configFile);
   });
 
   it('details page is served with --no-tray and only while the engine is running', async () => {

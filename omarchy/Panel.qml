@@ -317,7 +317,7 @@ Panel {
         }
 
         Row {
-          visible: root.service && root.service.doctor && (root.service.doctor.localRoot || root.service.doctor.detailUrl)
+          visible: root.service && root.service.doctor && (root.service.doctor.localRoot || root.service.doctor.detailUrl || root.service.doctor.configFile)
           spacing: Style.space(12)
           Text {
             visible: root.service && root.service.doctor && root.service.doctor.localRoot
@@ -334,6 +334,14 @@ Panel {
             font.underline: true
             font.pixelSize: Style.font.body
             MouseArea { anchors.fill: parent; onClicked: root.service.openExternal(root.service.doctor.detailUrl) }
+          }
+          Text {
+            visible: root.service && root.service.doctor && root.service.doctor.configFile
+            text: "Open config"
+            color: root.barForeground
+            font.underline: true
+            font.pixelSize: Style.font.body
+            MouseArea { anchors.fill: parent; onClicked: root.service.openExternal(root.service.doctor.configFile) }
           }
         }
       }

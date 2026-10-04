@@ -36,7 +36,7 @@ Click the chip. Choose Sign in. A terminal opens Proton's own page, and your pas
 
 ## Day to day
 
-The chip tells you what the engine is doing. Open it to pause, resume, sync now, confirm or reject a held change, keep one side of a conflict, or release a file the engine refused to touch. Open folder and Open details show up while the engine is running.
+The chip tells you what the engine is doing. Open it to pause, resume, sync now, confirm or reject a held change, keep one side of a conflict, or release a file the engine refused to touch. Open folder and Open config show up once a sync pair is saved. Open details shows up while the engine is running.
 
 `proton-drive-sync doctor` reports whether you are installed, signed in, and running. `proton-drive-sync details` prints the loopback details page for the engine you are running.
 
