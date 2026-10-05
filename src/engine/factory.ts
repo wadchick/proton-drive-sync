@@ -26,6 +26,7 @@ import { ConflictRepo, CursorRepo, QuarantineRepo, ScanRepo } from '../state/mis
 import { StateStore } from '../state/store.ts';
 import type { ControlTarget } from './control.js';
 import { SyncEngine } from './engine.js';
+import { bindStateToPair } from './pairState.js';
 import { RemoteMirror } from './remoteMirror.js';
 
 export interface EngineFactoryOptions {
@@ -71,23 +72,9 @@ export async function createEngine(options: EngineFactoryOptions): Promise<Engin
   const store = StateStore.open(paths.stateDb, { now });
   const baseline = new BaselineRepo(store);
 
-  // Pair change: if the stored baseline was built against a different remote root, the old
-  // baseline must not be applied to the new folder (it would look like a mass delete). Archive
-  // it (recoverable in `meta`) and reset so the next run is a clean first sync — no deletes.
-  // This is the archive-on-next-start that setup.ts promises.
-  const BASELINE_ROOT_KEY = 'baseline_remote_root';
-  const priorRemoteRoot = store.getMeta(BASELINE_ROOT_KEY);
-  if (priorRemoteRoot === null) {
-    store.setMeta(BASELINE_ROOT_KEY, remoteRootUid);
-  } else if (priorRemoteRoot !== remoteRootUid) {
-    const archived = baseline.all();
-    if (archived.length > 0) {
-      store.setMeta(`archived_baseline:${priorRemoteRoot}:${String(now())}`, JSON.stringify(archived));
-      audit.append({ kind: 'engine', op: 'setup', message: `sync pair changed (remote root ${priorRemoteRoot} -> ${remoteRootUid}): archived ${String(archived.length)} baseline row(s) and reset for a first sync`, outcome: 'ok' });
-    }
-    baseline.clear();
-    store.setMeta(BASELINE_ROOT_KEY, remoteRootUid);
-  }
+  // The stored state belongs to one pair of folders, remote and local. If either changed,
+  // archive it and reset so the next run is a clean first sync (see pairState.ts).
+  bindStateToPair(store, { remoteRootUid, localRoot: rootIdentity }, audit, now);
   const journal = new JournalRepo(store);
   const conflictRepo = new ConflictRepo(store);
   const cursors = new CursorRepo(store);
