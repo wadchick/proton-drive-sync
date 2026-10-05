@@ -26,6 +26,34 @@ async function syncedStart(): Promise<void> {
   h.assertBaselineConsistent();
 }
 
+describe('a dependent run still reports why it stopped', () => {
+  it('reports an auth stop from a non-transfer step', async () => {
+    h.write('a.txt', 'A');
+    h.write('b.txt', 'B');
+    await h.settle();
+    rmSync(path.join(h.root, 'a.txt'));
+    rmSync(path.join(h.root, 'b.txt'));
+    const plan = await h.plan();
+    expect(plan.operations.map((o) => o.kind)).toEqual(['trash_remote', 'trash_remote']);
+    h.fake.injectFault('trash', { kind: 'auth' });
+    const summary = await h.executeDependent(plan.operations);
+    expect(summary.stoppedEarly).toBe('auth');
+    expect(summary.stoppedError).toBeDefined();
+    expect(summary.completed).toBe(0);
+  });
+
+  it('reports a disk-full stop from a transfer batch', async () => {
+    h.fake.seedFile(h.remoteRootUid, 'big.txt', 'B');
+    h.fake.seedFile(h.remoteRootUid, 'next.txt', 'N');
+    const plan = await h.plan();
+    expect(plan.operations.map((o) => o.kind)).toEqual(['download', 'download']);
+    h.fake.injectFault('download', { kind: 'enospc' });
+    const summary = await h.executeDependent(plan.operations);
+    expect(summary.stoppedEarly).toBe('disk_full');
+    expect(summary.completed).toBe(0);
+  });
+});
+
 describe('remote changes after planning invalidate a planned trash', () => {
   /** Sync `relPath`, delete it locally, and plan: the plan trashes the remote copy. */
   async function plannedTrash(relPath: string, content: string): Promise<{ uid: string; plan: Awaited<ReturnType<typeof h.plan>> }> {

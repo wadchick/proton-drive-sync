@@ -146,6 +146,8 @@ export class Executor {
           summary.stoppedError = this.stoppingError;
           break;
         }
+        // After the stop reasons above, which the engine acts on.
+        if (plan.dependent === true && results.some((r) => r !== 'completed')) break;
       } else {
         const r = await this.runOne(op);
         this.tally(summary, r);
@@ -155,6 +157,8 @@ export class Executor {
           if (r === 'auth') summary.stoppedError = this.stoppingError;
           break;
         }
+        // After the stop reasons above, which the engine acts on.
+        if (plan.dependent === true && r !== 'completed') break;
       }
     }
     return summary;
