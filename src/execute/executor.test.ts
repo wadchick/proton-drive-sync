@@ -26,6 +26,65 @@ async function syncedStart(): Promise<void> {
   h.assertBaselineConsistent();
 }
 
+describe('remote changes after planning invalidate a planned trash', () => {
+  /** Sync `relPath`, delete it locally, and plan: the plan trashes the remote copy. */
+  async function plannedTrash(relPath: string, content: string): Promise<{ uid: string; plan: Awaited<ReturnType<typeof h.plan>> }> {
+    h.write(relPath, content);
+    await h.settle();
+    const uid = h.remotePathToUid(relPath);
+    if (uid === undefined) throw new Error('not synced');
+    rmSync(path.join(h.root, relPath));
+    const plan = await h.plan();
+    expect(plan.operations.map((o) => o.kind)).toEqual(['trash_remote']);
+    return { uid, plan };
+  }
+
+  it('a remote rename made after planning stops the trash', async () => {
+    const { uid, plan } = await plannedTrash('a.txt', 'A');
+    await h.fake.rename(uid, 'renamed.txt');
+
+    const { summary } = await h.execute(plan);
+
+    expect(summary.completed).toBe(0);
+    expect(h.fake.trashedUids(), 'the renamed file is kept').toEqual([]);
+    expect(h.remoteFiles().get('renamed.txt')).toBe('A');
+  });
+
+  it('a remote move into another folder made after planning stops the trash', async () => {
+    h.fake.seedFolder(h.remoteRootUid, 'other');
+    const { uid, plan } = await plannedTrash('a.txt', 'A');
+    const other = h.remotePathToUid('other');
+    if (other === undefined) throw new Error('missing folder');
+    await h.fake.move(uid, other);
+
+    await h.execute(plan);
+
+    expect(h.fake.trashedUids()).toEqual([]);
+    expect(h.remoteFiles().get('other/a.txt')).toBe('A');
+  });
+
+  it('renaming a parent folder after planning stops the trash too', async () => {
+    const { plan } = await plannedTrash('docs/a.txt', 'A');
+    const docs = h.remotePathToUid('docs');
+    if (docs === undefined) throw new Error('missing folder');
+    await h.fake.rename(docs, 'papers');
+
+    await h.execute(plan);
+
+    expect(h.fake.trashedUids()).toEqual([]);
+    expect(h.remoteFiles().get('papers/a.txt')).toBe('A');
+  });
+
+  it('with no remote change, the planned trash still runs', async () => {
+    const { uid, plan } = await plannedTrash('docs/a.txt', 'A');
+
+    const { summary } = await h.execute(plan);
+
+    expect(summary.completed).toBe(1);
+    expect(h.fake.trashedUids()).toEqual([uid]);
+  });
+});
+
 describe('Executor', () => {
   it('journals planned -> in_progress -> completed and updates the baseline only at completion', async () => {
     const seen: string[] = [];
