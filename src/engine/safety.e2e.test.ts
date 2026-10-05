@@ -175,3 +175,74 @@ describe('absence is not a delete', () => {
     expect(status?.state, `state was ${status?.state ?? '?'}`).not.toBe('awaiting_confirmation');
   });
 });
+
+/**
+ * A replaced local root must be refused before anything changes files or state, not
+ * only before the executor runs: conflict handling, a confirmed held plan and a user's
+ * conflict resolution all mutate too.
+ */
+describe('a replaced local root is refused before any mutation', () => {
+  /** Swap the root for a new directory at the same path holding `files`. */
+  function replaceRoot(files: Record<string, string>): void {
+    rmSync(h.root, { recursive: true, force: true });
+    mkdirSync(h.root);
+    for (const [relPath, content] of Object.entries(files)) h.write(relPath, content);
+  }
+
+  it('startup does not rename a conflicting file in the replaced root', async () => {
+    h.write('doc.txt', 'base');
+    await h.start();
+    await h.waitForConvergence();
+    await h.bundle?.dispose();
+
+    replaceRoot({ 'doc.txt': 'other directory' });
+    h.fake.seedRevision(h.remotePathToUid('doc.txt') ?? '', 'remote edit');
+    await h.start();
+    await settle();
+
+    expect([...h.localFiles().keys()], 'the replaced root must be left untouched').toEqual(['doc.txt']);
+    expect(h.bundle?.controlTarget.listConflicts(), 'no conflict may be recorded').toEqual([]);
+    expect(h.bundle?.engine.getStatus().state).toBe('error');
+  });
+
+  it('confirming a held plan does not run it against a replaced root', async () => {
+    for (let i = 0; i < 6; i++) h.write(`f${String(i)}.txt`, String(i));
+    h.config = { ...h.config, safety: { ...h.config.safety, brakeMaxChanges: 2 } };
+    await h.start();
+    await h.waitForConvergence();
+    for (let i = 0; i < 4; i++) rmSync(path.join(h.root, `f${String(i)}.txt`));
+    const status = await h.waitFor(['awaiting_confirmation']);
+    expect(status.attention.heldPlan?.affected).toHaveLength(4);
+
+    replaceRoot({ 'f4.txt': '4', 'f5.txt': '5' });
+    const result = await h.bundle?.engine.confirmHeldPlan(status.attention.heldPlan?.id ?? '');
+
+    expect(h.fake.trashedUids(), 'held remote trashes must not run against a replaced root').toEqual([]);
+    expect(result?.skipped).toMatch(/sync_root_changed/);
+    expect(h.bundle?.engine.getStatus().attention.heldPlan?.id, 'the plan stays held').toBe(status.attention.heldPlan?.id);
+  });
+
+  it('resolving a conflict does not act on a replaced root', async () => {
+    h.write('doc.md', 'base');
+    await h.start();
+    await h.waitForConvergence();
+    h.bundle?.engine.pause();
+    await h.waitFor(['paused']);
+    h.write('doc.md', 'local');
+    h.fake.seedRevision(h.remotePathToUid('doc.md') ?? '', 'remote');
+    h.bundle?.engine.resume();
+    await h.waitFor(['attention']);
+    await h.waitForConvergence();
+    const conflict = h.bundle?.controlTarget.listConflicts()[0];
+    const copy = [...h.localFiles().keys()].find((p) => p !== 'doc.md') ?? '';
+    const copyUid = h.remotePathToUid(copy);
+    expect(copyUid).toBeDefined();
+
+    replaceRoot({ 'doc.md': 'other', [copy]: 'other copy' });
+    await expect(h.bundle?.engine.resolveConflict(conflict?.id ?? 0, 'keep_remote')).rejects.toThrow(/sync_root_changed/);
+
+    expect(h.fake.trashedUids(), 'the remote copy must not be trashed').toEqual([]);
+    expect(h.localFiles().get(copy)).toBe('other copy');
+    expect(h.bundle?.controlTarget.listConflicts().map((c) => c.id), 'the conflict stays open').toEqual([conflict?.id]);
+  });
+});
