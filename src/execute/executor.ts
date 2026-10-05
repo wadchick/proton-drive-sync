@@ -291,8 +291,13 @@ export class Executor {
       this.emit({ type: 'operation_skipped', operation: op, reason: 'local item vanished' });
       return 'skipped';
     }
-    if (st.ino !== op.local.ino) {
-      this.emit({ type: 'operation_skipped', operation: op, reason: 'local item changed' });
+    // The whole planned fingerprint must still hold, not just the inode: an in-place edit
+    // keeps the inode but changes size and mtime, and the planned digest only vouches for
+    // the planned content. Recording it with new stat values would make the stat fast
+    // path skip hashing for good, so the edit would never sync.
+    const changed = fingerprintMismatch(op.relPath, op.local, this.ctx.root);
+    if (changed !== null) {
+      this.emit({ type: 'operation_skipped', operation: op, reason: `local item changed: ${changed}` });
       return 'skipped';
     }
     this.ctx.baseline.upsert({

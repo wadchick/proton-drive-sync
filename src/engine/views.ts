@@ -3,7 +3,7 @@
  * the reconciler's plain input types.
  */
 import type { DigestProvider } from '../local/digest.js';
-import type { LocalSnapshot } from '../local/snapshot.js';
+import type { LocalEntry, LocalSnapshot } from '../local/snapshot.js';
 import type { BaselineItem, LocalItem, LocalView, RemoteItem, RemoteView } from '../reconcile/types.js';
 import type { RemoteDrive, RemoteNode } from '../remote/interface.js';
 import type { BaselineRow } from '../state/baseline.ts';
@@ -32,6 +32,17 @@ export function remoteNodeToItem(node: RemoteNode): RemoteItem {
     size: node.claimedSize,
     mtimeMs: node.claimedModifiedAt?.getTime(),
   };
+}
+
+/**
+ * Whether a local file must be hashed again before planning: it has no baseline
+ * row, its stat (inode, size, mtime) differs from the row, or the row has no
+ * digest. A row whose stat matches is trusted to still describe the same
+ * content, so a baseline row must never pair new stat values with an old digest.
+ */
+export function needsDigest(row: BaselineRow | null, entry: LocalEntry | undefined): boolean {
+  if (row === null || entry === undefined) return true;
+  return row.localIno !== entry.ino || row.localSize !== entry.size || row.localMtimeMs !== entry.mtimeMs || row.localSha1 === null;
 }
 
 /**
