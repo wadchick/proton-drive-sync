@@ -1,10 +1,11 @@
-import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Operation } from '../reconcile/types.js';
 import { sha1Hex } from '../testing/fakeRemote.js';
 import { SyncHarness } from '../testing/harness.js';
+import { INTERNAL_DIR_NAME } from '../config/paths.js';
 import { tempDir } from './localWrite.js';
 
 let h: SyncHarness;
@@ -107,5 +108,45 @@ describe('recoverJournal', () => {
     const plan = await h.plan();
     expect(plan.operations.map((o) => o.kind)).toEqual([]);
     h.assertBaselineConsistent();
+  });
+});
+
+describe('temp cleanup never follows a symlink out of the root', () => {
+  /** An unrelated folder outside the root, holding files that must survive. */
+  function outsideFolder(): string {
+    const outside = path.join(h.base, 'outside');
+    mkdirSync(path.join(outside, 'tmp'), { recursive: true });
+    writeFileSync(path.join(outside, 'precious.txt'), 'P');
+    writeFileSync(path.join(outside, 'tmp', 'download-looks-like-ours'), 'Q');
+    return outside;
+  }
+
+  it('leaves the target alone when the internal folder is a symlink', async () => {
+    const outside = outsideFolder();
+    rmSync(path.join(h.root, INTERNAL_DIR_NAME), { recursive: true, force: true });
+    symlinkSync(outside, path.join(h.root, INTERNAL_DIR_NAME));
+    const report = await h.recover();
+    expect(report.tempFilesRemoved).toBe(0);
+    expect(readdirSync(path.join(outside, 'tmp'))).toEqual(['download-looks-like-ours']);
+    expect(readFileSync(path.join(outside, 'precious.txt'), 'utf8')).toBe('P');
+  });
+
+  it('leaves the target alone when the temp folder is a symlink', async () => {
+    const outside = outsideFolder();
+    rmSync(tempDir(h.root), { recursive: true, force: true });
+    mkdirSync(path.dirname(tempDir(h.root)), { recursive: true });
+    symlinkSync(outside, tempDir(h.root));
+    const report = await h.recover();
+    expect(report.tempFilesRemoved).toBe(0);
+    expect(readdirSync(outside).sort()).toEqual(['precious.txt', 'tmp']);
+  });
+
+  it('removes only our own download temp files from the real temp folder', async () => {
+    mkdirSync(tempDir(h.root), { recursive: true });
+    writeFileSync(path.join(tempDir(h.root), 'download-partial'), 'partial');
+    writeFileSync(path.join(tempDir(h.root), 'not-ours.txt'), 'N');
+    const report = await h.recover();
+    expect(report.tempFilesRemoved).toBe(1);
+    expect(readdirSync(tempDir(h.root))).toEqual(['not-ours.txt']);
   });
 });
