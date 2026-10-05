@@ -86,6 +86,27 @@ describe('remote changes after planning invalidate a planned trash', () => {
 });
 
 describe('Executor', () => {
+  it('never records an in-place edit made after planning as already synced', async () => {
+    h.write('same.txt', 'SAME');
+    h.fake.seedFile(h.remoteRootUid, 'same.txt', 'SAME');
+    const plan = await h.plan();
+    expect(plan.operations.map((o) => o.kind)).toEqual(['update_baseline']);
+    // The user edits the file in place between planning and execution: same inode, new content.
+    const file = path.join(h.root, 'same.txt');
+    const ino = statSync(file).ino;
+    writeFileSync(file, 'NEW USER CONTENT');
+    expect(statSync(file).ino).toBe(ino);
+
+    await h.execute(plan);
+
+    // No baseline row may pair the edited file's stat with the old content's digest.
+    const row = h.baseline.byPath('same.txt');
+    if (row !== null && row.localSize === statSync(file).size) expect(row.localSha1).toBe(sha1Hex('NEW USER CONTENT'));
+    // With the engine's own hashing rule, the next plan still has work for the edit.
+    const next = await h.plan({ digest: 'engine' });
+    expect(next.operations.length + next.conflicts.length, 'the edit must not be silently treated as synced').toBeGreaterThan(0);
+  });
+
   it('journals planned -> in_progress -> completed and updates the baseline only at completion', async () => {
     const seen: string[] = [];
     h.reopen({

@@ -35,7 +35,7 @@ import type { BaselineRepo } from '../state/baseline.ts';
 import type { ConflictRepo, ScanRepo } from '../state/misc.ts';
 import type { RemoteMirror } from './remoteMirror.js';
 import { canTransition, IllegalStateTransitionError, initialStatus, summarize, type EngineState, type EngineStatus, type TransferStatus } from './status.js';
-import { baselineRowToItem, localViewFromSnapshot } from './views.js';
+import { baselineRowToItem, localViewFromSnapshot, needsDigest } from './views.js';
 
 export interface EngineDeps {
   config: SyncConfig;
@@ -403,12 +403,7 @@ export class SyncEngine extends EventEmitter {
     const baselineRows = this.deps.baseline.all();
     const baseline = new Map<string, BaselineItem>();
     for (const row of baselineRows) baseline.set(row.relPath, baselineRowToItem(row));
-    const needDigest = (relPath: string): boolean => {
-      const row = this.deps.baseline.byPath(relPath);
-      const entry = snapshot.entries.get(relPath);
-      if (row === null || entry === undefined) return true;
-      return row.localIno !== entry.ino || row.localSize !== entry.size || row.localMtimeMs !== entry.mtimeMs || row.localSha1 === null;
-    };
+    const needDigest = (relPath: string): boolean => needsDigest(this.deps.baseline.byPath(relPath), snapshot.entries.get(relPath));
     const local = this.withHiddenPaths(await localViewFromSnapshot(snapshot, this.deps.digests, needDigest, this.localRootAvailable), snapshot, baseline);
     const remote = this.deps.mirror.view();
     const sets = this.deps.quarantine.sets();
