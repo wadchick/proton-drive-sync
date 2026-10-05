@@ -37,17 +37,18 @@ const rows = (): number => new BaselineRepo(store).all().length;
 
 describe('bindStateToPair', () => {
   it('records the pair on a fresh install without resetting anything', () => {
-    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, folder, audit, now)).toBe(false);
+    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, audit, now)).toBe(false);
     expect(JSON.parse(store.getMeta(PAIR_KEY) ?? '{}')).toEqual({ remoteRootUid: 'R', localRoot: local });
     expect(store.getMeta(LEGACY_REMOTE_KEY)).toBe('R');
   });
 
-  it('adopts state from a version that recorded only the remote root, when its baseline matches the folder', () => {
+  it('resets non-empty state from a version that recorded only the remote root, even when its files are still there', () => {
     store.setMeta(LEGACY_REMOTE_KEY, 'R');
+    // The files may have been moved here from the old folder: nothing proves which folder it was.
     writeFileSync(path.join(folder, 'a.txt'), 'A');
     new BaselineRepo(store).upsert({ ...row('a.txt'), localIno: statSync(path.join(folder, 'a.txt')).ino });
-    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, folder, audit, now)).toBe(false);
-    expect(rows()).toBe(1);
+    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, audit, now)).toBe(true);
+    expect(rows()).toBe(0);
   });
 
   it('resets state from a version that recorded only the remote root, when its baseline is not this folder', () => {
@@ -56,44 +57,44 @@ describe('bindStateToPair', () => {
     writeFileSync(path.join(folder, 'a.txt'), 'A');
     new BaselineRepo(store).upsert({ ...row('a.txt'), localIno: statSync(path.join(folder, 'a.txt')).ino + 1 });
     new BaselineRepo(store).upsert(row('b.txt'));
-    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, folder, audit, now)).toBe(true);
+    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, audit, now)).toBe(true);
     expect(rows()).toBe(0);
     expect(store.getMeta(`archived_baseline:R:${String(now())}`)).not.toBeNull();
   });
 
   it('adopts empty legacy state without checking anything', () => {
     store.setMeta(LEGACY_REMOTE_KEY, 'R');
-    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, folder, audit, now)).toBe(false);
+    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, audit, now)).toBe(false);
   });
 
   it('resets when the remote root changes, as before', () => {
     store.setMeta(LEGACY_REMOTE_KEY, 'R');
     new BaselineRepo(store).upsert(row('a.txt'));
-    expect(bindStateToPair(store, { remoteRootUid: 'R2', localRoot: local }, folder, audit, now)).toBe(true);
+    expect(bindStateToPair(store, { remoteRootUid: 'R2', localRoot: local }, audit, now)).toBe(true);
     expect(rows()).toBe(0);
   });
 
   it('resets when only the local root changes, and keeps the old baseline recoverable', () => {
-    bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, folder, audit, now);
+    bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, audit, now);
     new BaselineRepo(store).upsert(row('old.txt'));
     const other: RootIdentity = { dev: 41, ino: 999, birthtimeMs: 1_650_000_000_000, fsKey: 'btrfs:abc' };
-    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: other }, folder, audit, now)).toBe(true);
+    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: other }, audit, now)).toBe(true);
     expect(rows()).toBe(0);
     const archived = store.getMeta(`archived_baseline:R:${String(now())}`);
     expect((JSON.parse(archived ?? '[]') as BaselineRow[]).map((r) => r.relPath)).toEqual(['old.txt']);
   });
 
   it('treats a btrfs device number that changed after a reboot as the same folder', () => {
-    bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, folder, audit, now);
+    bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, audit, now);
     new BaselineRepo(store).upsert(row('a.txt'));
-    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: { ...local, dev: 77 } }, folder, audit, now)).toBe(false);
+    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: { ...local, dev: 77 } }, audit, now)).toBe(false);
     expect(rows()).toBe(1);
   });
 
   it('treats a replaced folder that reused the inode as a different folder', () => {
-    bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, folder, audit, now);
+    bindStateToPair(store, { remoteRootUid: 'R', localRoot: local }, audit, now);
     new BaselineRepo(store).upsert(row('a.txt'));
-    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: { ...local, birthtimeMs: 1_699_000_000_000 } }, folder, audit, now)).toBe(true);
+    expect(bindStateToPair(store, { remoteRootUid: 'R', localRoot: { ...local, birthtimeMs: 1_699_000_000_000 } }, audit, now)).toBe(true);
     expect(rows()).toBe(0);
   });
 });
