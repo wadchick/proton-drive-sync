@@ -33,6 +33,7 @@ const REMOVAL_ALLOW_LIST: Record<string, number> = {
   'audit/logger.ts': 1, // rotate out an old audit log segment
   'config/secretStore.ts': 1, // delete the secret file once it holds nothing
   'engine/control.ts': 2, // remove the control socket file
+  'engine/factory.ts': 1, // remove a dry run's own throwaway state folder
   'execute/localWrite.ts': 1, // drop the temp file after a failed atomic write
   'execute/recovery.ts': 1, // sweep orphaned temp files on journal recovery
   'remote/transfer.ts': 1, // drop the partial download temp file

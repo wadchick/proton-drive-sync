@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -6,6 +6,7 @@ import { readRootIdentity } from '../config/localRoot.js';
 import { BaselineRepo } from '../state/baseline.js';
 import { JournalRepo } from '../state/journal.js';
 import { ConflictRepo } from '../state/misc.js';
+import { StateStore } from '../state/store.js';
 import { EngineHarness } from '../testing/engineHarness.js';
 import { PAIR_KEY } from './pairState.js';
 
@@ -81,7 +82,28 @@ describe('sync pair changes', () => {
     expect(h.remoteFiles().get('old.txt')).toBe('OLD');
   });
 
-  it('state from a version that recorded only the remote folder is kept for the same folder', async () => {
+  it('legacy state is not applied even when most of its files were moved into the new folder', async () => {
+    h.write('a.txt', 'A');
+    h.write('b.txt', 'B');
+    h.write('c.txt', 'C');
+    await h.start();
+    await h.waitForConvergence();
+    store().db.prepare('DELETE FROM meta WHERE key = ?').run(PAIR_KEY);
+    await h.bundle?.dispose();
+
+    // Two of three files move (same inodes) into a new folder; the third stays behind.
+    const next = otherRoot('root5', {});
+    renameSync(path.join(h.root, 'a.txt'), path.join(next, 'a.txt'));
+    renameSync(path.join(h.root, 'b.txt'), path.join(next, 'b.txt'));
+    h.config = { ...h.config, localRoot: next, localRootIdentity: readRootIdentity(next) };
+    await h.start();
+    await settle();
+
+    expect(h.fake.trashedUids(), 'the file left behind must not be trashed remotely').toEqual([]);
+    expect(h.remoteFiles().get('c.txt')).toBe('C');
+  });
+
+  it('legacy state for the same folder is rebuilt by a first sync, deleting nothing', async () => {
     h.write('a.txt', 'A');
     h.write('b.txt', 'B');
     await h.start();
@@ -90,9 +112,35 @@ describe('sync pair changes', () => {
     store().db.prepare('DELETE FROM meta WHERE key = ?').run(PAIR_KEY);
 
     await h.restart();
-    await settle();
+    await h.waitForConvergence();
 
-    expect(new BaselineRepo(store()).all().length, 'an upgrade with the same folders keeps its history').toBe(rows);
+    expect(h.fake.trashedUids()).toEqual([]);
+    expect(new BaselineRepo(store()).all().length, 'the first sync pairs the same files again').toBe(rows);
+  });
+
+  it('a dry run with a changed folder previews a first sync without touching the stored state', async () => {
+    h.write('old.txt', 'OLD');
+    await h.start();
+    await h.waitForConvergence();
+    const rows = new BaselineRepo(store()).all().length;
+    const pair = store().getMeta(PAIR_KEY);
+    await h.bundle?.dispose();
+
+    const next = otherRoot('root6', { 'new.txt': 'NEW' });
+    h.config = { ...h.config, dryRun: true, localRoot: next, localRootIdentity: readRootIdentity(next) };
+    await h.start();
+    await settle();
+    expect(h.fake.trashedUids(), 'a preview trashes nothing').toEqual([]);
+    await h.bundle?.dispose();
+
+    // The real store, read directly: the baseline and the recorded pair are as before.
+    const real = StateStore.open(h.paths.stateDb);
+    try {
+      expect(new BaselineRepo(real).all().length, 'the dry run must not reset the baseline').toBe(rows);
+      expect(real.getMeta(PAIR_KEY), 'the dry run must not record the new pair').toBe(pair);
+    } finally {
+      real.close();
+    }
   });
 
   it('restarting with the same pair keeps the sync history', async () => {
