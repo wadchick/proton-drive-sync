@@ -79,6 +79,12 @@ export interface ReconcileInput {
   /** Paths and uids the engine refuses to touch. */
   quarantinedPaths?: ReadonlySet<string>;
   quarantinedUids?: ReadonlySet<string>;
+  /**
+   * Paths excluded from sync by the ignore rules (the local scan already omits them). A
+   * remote item at an excluded path is never brought in or moved to; the internal state
+   * folder is excluded whether or not this is given.
+   */
+  ignored?: (relPath: string) => boolean;
 }
 
 /** How one side changed relative to the baseline. */
@@ -153,6 +159,8 @@ export type BlockedReason =
   | 'unsupported_type'
   | 'quarantined'
   | 'orphan'
+  /** A remote move or rename would put the item at an ignored path (or in the internal folder). */
+  | 'ignored_destination'
   /** The side's view predates the item's last sync; its absence is not trusted. */
   | 'stale_view';
 

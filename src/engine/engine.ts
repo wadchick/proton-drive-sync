@@ -407,7 +407,7 @@ export class SyncEngine extends EventEmitter {
     const local = this.withHiddenPaths(await localViewFromSnapshot(snapshot, this.deps.digests, needDigest, this.localRootAvailable), snapshot, baseline);
     const remote = this.deps.mirror.view();
     const sets = this.deps.quarantine.sets();
-    const plan = reconcile({ baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids });
+    const plan = reconcile({ baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids, ignored: this.ignoreMatcher });
     this.deps.scans.markCompleted('local', snapshot.scannedAt);
     this.status = {
       ...this.status,
@@ -439,7 +439,7 @@ export class SyncEngine extends EventEmitter {
       const base2 = new Map<string, BaselineItem>();
       for (const row of this.deps.baseline.all()) base2.set(row.relPath, baselineRowToItem(row));
       const local2 = this.withHiddenPaths(await localViewFromSnapshot(snapshot2, this.deps.digests, needDigest, this.localRootAvailable), snapshot2, base2);
-      const replanned = reconcile({ baseline: base2, local: local2, remote: this.deps.mirror.view(), quarantinedPaths: sets.paths, quarantinedUids: sets.uids });
+      const replanned = reconcile({ baseline: base2, local: local2, remote: this.deps.mirror.view(), quarantinedPaths: sets.paths, quarantinedUids: sets.uids, ignored: this.ignoreMatcher });
       return this.gateAndExecute(replanned);
     }
     return this.gateAndExecute(plan);
