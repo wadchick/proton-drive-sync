@@ -74,7 +74,7 @@ export async function createEngine(options: EngineFactoryOptions): Promise<Engin
 
   // The stored state belongs to one pair of folders, remote and local. If either changed,
   // archive it and reset so the next run is a clean first sync (see pairState.ts).
-  bindStateToPair(store, { remoteRootUid, localRoot: rootIdentity }, audit, now);
+  bindStateToPair(store, { remoteRootUid, localRoot: rootIdentity }, config.localRoot, audit, now);
   const journal = new JournalRepo(store);
   const conflictRepo = new ConflictRepo(store);
   const cursors = new CursorRepo(store);

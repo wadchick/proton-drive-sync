@@ -7,9 +7,12 @@
  * closed, and the baseline is reset so the next run is a first sync, which never
  * deletes. This is the archive-on-next-start that setup.ts promises.
  */
+import { lstatSync } from 'node:fs';
+import path from 'node:path';
+
 import type { AuditLog } from '../audit/logger.js';
 import { sameIdentity, type RootIdentity } from '../config/localRoot.js';
-import { BaselineRepo } from '../state/baseline.js';
+import { BaselineRepo, type BaselineRow } from '../state/baseline.js';
 import { JournalRepo } from '../state/journal.js';
 import { ConflictRepo, QuarantineRepo } from '../state/misc.js';
 import type { StateStore } from '../state/store.js';
@@ -22,6 +25,9 @@ export interface SyncPair {
   remoteRootUid: string;
   localRoot: RootIdentity;
 }
+
+/** Baseline rows checked against the folder when the old state has no local root recorded. */
+const LEGACY_SAMPLE = 200;
 
 function storedPair(store: StateStore): { remoteRootUid: string; localRoot: RootIdentity | null } | null {
   const raw = store.getMeta(PAIR_KEY);
@@ -40,20 +46,45 @@ function storedPair(store: StateStore): { remoteRootUid: string; localRoot: Root
 }
 
 /**
+ * Does `rows` describe the folder at `localRootPath`? Most of a sample of the
+ * recorded items must still be there, at the same path with the same inode. A
+ * different folder (even a copy of the same files) fails this; so does one where
+ * more than half the items were removed while nothing ran, which then starts as
+ * a first sync and downloads them again rather than deleting them remotely.
+ */
+function baselineDescribesFolder(rows: readonly BaselineRow[], localRootPath: string): boolean {
+  if (rows.length === 0) return true; // nothing to apply, so nothing to delete
+  const step = Math.ceil(rows.length / LEGACY_SAMPLE);
+  let checked = 0;
+  let found = 0;
+  for (let i = 0; i < rows.length; i += step) {
+    const row = rows[i];
+    if (row === undefined) continue;
+    checked++;
+    try {
+      if (lstatSync(path.join(localRootPath, row.relPath)).ino === row.localIno) found++;
+    } catch {
+      // missing: not found
+    }
+  }
+  return found * 2 > checked;
+}
+
+/**
  * Record `current` as the pair the stored state belongs to, first resetting that
  * state if it was built for a different pair. Returns true when it reset.
  *
- * A state from a version that recorded only the remote root is adopted as the
- * current pair when the remote root matches: its local side was never recorded,
- * so there is nothing to compare, and resetting every upgraded install would
- * force a full first sync on all of them.
+ * A state from a version that recorded only the remote root has no local root to
+ * compare. It is adopted only when its baseline still describes the folder at
+ * `localRootPath` (see `baselineDescribesFolder`), so an upgrade keeps its sync
+ * history but a folder changed before or during the upgrade starts fresh.
  */
-export function bindStateToPair(store: StateStore, current: SyncPair, audit: AuditLog, now: () => number): boolean {
+export function bindStateToPair(store: StateStore, current: SyncPair, localRootPath: string, audit: AuditLog, now: () => number): boolean {
   const previous = storedPair(store);
   const remoteChanged = previous !== null && previous.remoteRootUid !== current.remoteRootUid;
-  // Unknown when the old state predates recording the local side (see above).
   const previousLocal = previous === null ? null : previous.localRoot;
-  const localChanged = previousLocal !== null && !sameIdentity(previousLocal, current.localRoot);
+  const localChanged =
+    previous !== null && (previousLocal !== null ? !sameIdentity(previousLocal, current.localRoot) : !remoteChanged && !baselineDescribesFolder(new BaselineRepo(store).all(), localRootPath));
   if (remoteChanged || localChanged) {
     store.transaction(() => {
       resetForNewPair(store, previous, { remoteChanged, localChanged }, audit, now);
