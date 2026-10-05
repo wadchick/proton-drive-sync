@@ -39,6 +39,9 @@ export class DiskFullError extends Error {
   }
 }
 
+/** Name prefix of our download temp files; startup cleanup removes only these. */
+export const TEMP_FILE_PREFIX = 'download-';
+
 export function tempDir(root: string): string {
   return path.join(root, INTERNAL_DIR_NAME, 'tmp');
 }
@@ -48,7 +51,7 @@ export function newTempPath(root: string): string {
   assertWritableInsideRoot(root, `${INTERNAL_DIR_NAME}/tmp/download`);
   const dir = tempDir(root);
   mkdirSync(dir, { recursive: true });
-  return path.join(dir, `download-${randomUUID()}`);
+  return path.join(dir, `${TEMP_FILE_PREFIX}${randomUUID()}`);
 }
 
 export function isDiskFull(error: unknown): boolean {
