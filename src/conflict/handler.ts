@@ -117,28 +117,34 @@ export class ConflictHandler {
       }
     };
     const copyPath = uniqueConflictPath(c.relPath, this.machine, this.now(), exists);
-    if (local !== undefined) {
-      // Journal the local rename as a move so recovery can finish it.
-      const entry = this.ctx.journal.plan({ op: 'conflict_rename_local', relPath: copyPath, previousRelPath: c.relPath, nodeUid: c.remoteUid ?? null, intended: { kind: 'conflict_rename_local', from: c.relPath, to: copyPath }, preState: { local } });
-      this.ctx.journal.start(entry.id);
-      assertWritableInsideRoot(this.ctx.root, c.relPath);
-      assertWritableInsideRoot(this.ctx.root, copyPath);
-      renameSync(path.join(this.ctx.root, c.relPath), path.join(this.ctx.root, copyPath));
-      this.ctx.store.transaction(() => {
-        // The original path now belongs to the remote version only; the copy is a new local file.
-        this.ctx.baseline.remove(c.relPath);
-        this.ctx.journal.complete(entry.id, { renamedTo: copyPath });
-      });
-    } else {
-      this.ctx.baseline.remove(c.relPath);
-    }
-    const record = this.ctx.conflicts.add({
+    const inbox = {
       relPath: c.relPath,
       nodeUid: c.remoteUid ?? null,
       kind: c.kind,
       local: { path: copyPath, fingerprint: local ?? null },
       remote: remoteNode === null ? null : { uid: remoteNode.uid, revisionUid: remoteNode.revisionUid, sha1: remoteNode.claimedSha1, size: remoteNode.claimedSize },
-    });
+    };
+    let record: ConflictEntry;
+    if (local !== undefined) {
+      // Journal the local rename (with the conflict kind) so recovery can finish it after a crash.
+      const entry = this.ctx.journal.plan({ op: 'conflict_rename_local', relPath: copyPath, previousRelPath: c.relPath, nodeUid: c.remoteUid ?? null, intended: { kind: 'conflict_rename_local', from: c.relPath, to: copyPath, conflictKind: c.kind }, preState: { local } });
+      this.ctx.journal.start(entry.id);
+      assertWritableInsideRoot(this.ctx.root, c.relPath);
+      assertWritableInsideRoot(this.ctx.root, copyPath);
+      renameSync(path.join(this.ctx.root, c.relPath), path.join(this.ctx.root, copyPath));
+      // One transaction: the original path's row goes, the conflict enters the inbox and the journal
+      // completes together, so a crash cannot leave a renamed file with no conflict to resolve.
+      record = this.ctx.store.transaction(() => {
+        // The original path now belongs to the remote version only; the copy is a new local file.
+        this.ctx.baseline.remove(c.relPath);
+        const added = this.ctx.conflicts.add(inbox);
+        this.ctx.journal.complete(entry.id, { renamedTo: copyPath });
+        return added;
+      });
+    } else {
+      this.ctx.baseline.remove(c.relPath);
+      record = this.ctx.conflicts.add(inbox);
+    }
     this.ctx.audit.append({
       kind: 'conflict',
       op: c.kind,

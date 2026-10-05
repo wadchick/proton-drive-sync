@@ -70,6 +70,9 @@ function nameOf(p: string): string {
 function remoteFingerprintMismatch(node: RemoteNode | null, expected: RemoteFingerprint): string | null {
   if (node === null) return `remote node ${expected.uid} is missing`;
   if (node.isTrashed) return `remote node ${expected.uid} is trashed`;
+  // Location too: a rename or move keeps the revision and digest, so they alone cannot tell.
+  if ((node.parentUid ?? undefined) !== (expected.parentUid ?? undefined)) return `moved to another folder (${expected.parentUid ?? 'none'} -> ${node.parentUid ?? 'none'})`;
+  if (node.name !== expected.name) return `renamed (${expected.name} -> ${node.name})`;
   if ((node.revisionUid ?? undefined) !== (expected.revisionUid ?? undefined)) return `revision changed (${expected.revisionUid ?? 'none'} -> ${node.revisionUid ?? 'none'})`;
   if (expected.sha1 !== undefined && node.claimedSha1 !== undefined && node.claimedSha1 !== expected.sha1) return 'remote digest changed';
   return null;
@@ -320,6 +323,25 @@ export class Executor {
     return 'completed';
   }
 
+  /**
+   * Before trashing, the item must still sit at `relPath` under the sync root: every folder
+   * up to the root keeps its planned name. A reason to skip, or null.
+   */
+  private async remotePathMismatch(node: RemoteNode, relPath: string): Promise<string | null> {
+    const parts = relPath.split('/');
+    let current = node;
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (current.name !== parts[i]) return `remote path changed: ${relPath} is no longer where it was planned`;
+      const parentUid = current.parentUid;
+      if (parentUid === undefined) return `remote item ${relPath} is no longer under the sync root`;
+      if (i === 0) return parentUid === this.ctx.remoteRootUid ? null : `remote item ${relPath} is no longer under the sync root`;
+      const parent = await this.ctx.remote.getNode(parentUid);
+      if (parent === null || parent.isTrashed) return `remote folder ${parts.slice(0, i).join('/')} is gone`;
+      current = parent;
+    }
+    return null;
+  }
+
   /** Re-check both sides against the fingerprints recorded at planning. Returns a reason to skip, or null. */
   private async precheck(op: Operation): Promise<string | null> {
     switch (op.kind) {
@@ -348,8 +370,13 @@ export class Executor {
         const local = fingerprintMismatch(op.relPath, op.expectedLocal, this.ctx.root);
         return local === null ? null : `local ${local}`;
       }
-      case 'trash_remote':
-        return remoteFingerprintMismatch(await this.ctx.remote.getNode(op.remoteUid), op.expectedRemote);
+      case 'trash_remote': {
+        const node = await this.ctx.remote.getNode(op.remoteUid);
+        const changed = remoteFingerprintMismatch(node, op.expectedRemote);
+        if (changed !== null || node === null) return changed;
+        // The node's own parent and name can match while an ancestor folder was renamed or moved.
+        return this.remotePathMismatch(node, op.relPath);
+      }
       case 'create_remote_folder':
       case 'create_local_folder':
       case 'update_baseline':

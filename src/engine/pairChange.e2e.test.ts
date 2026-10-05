@@ -7,6 +7,7 @@ import { BaselineRepo } from '../state/baseline.js';
 import { JournalRepo } from '../state/journal.js';
 import { ConflictRepo } from '../state/misc.js';
 import { EngineHarness } from '../testing/engineHarness.js';
+import { PAIR_KEY } from './pairState.js';
 
 /**
  * The sync history (baseline) belongs to one pair of folders: the remote root
@@ -60,6 +61,38 @@ describe('sync pair changes', () => {
     expect(h.fake.trashedUids(), 'nothing may be trashed because of the old pair').toEqual([]);
     expect(h.remoteFiles().get('old.txt'), 'the old file stays on Proton').toBe('OLD');
     expect(h.remoteFiles().get('new.txt'), 'the new folder still syncs').toBe('NEW');
+  });
+
+  it('state from a version that recorded only the remote folder is not applied to a different local folder', async () => {
+    h.write('old.txt', 'OLD');
+    h.write('kept.txt', 'KEPT');
+    await h.start();
+    await h.waitForConvergence();
+    // Make the stored state look like an older version's: the remote root only.
+    store().db.prepare('DELETE FROM meta WHERE key = ?').run(PAIR_KEY);
+
+    // The folder changes in the same upgrade, or before the new version first runs.
+    const next = otherRoot('root4', { 'kept.txt': 'KEPT' });
+    h.config = { ...h.config, localRoot: next, localRootIdentity: readRootIdentity(next) };
+    await h.restart();
+    await settle();
+
+    expect(h.fake.trashedUids(), 'the old history must not trash files missing from the new folder').toEqual([]);
+    expect(h.remoteFiles().get('old.txt')).toBe('OLD');
+  });
+
+  it('state from a version that recorded only the remote folder is kept for the same folder', async () => {
+    h.write('a.txt', 'A');
+    h.write('b.txt', 'B');
+    await h.start();
+    await h.waitForConvergence();
+    const rows = new BaselineRepo(store()).all().length;
+    store().db.prepare('DELETE FROM meta WHERE key = ?').run(PAIR_KEY);
+
+    await h.restart();
+    await settle();
+
+    expect(new BaselineRepo(store()).all().length, 'an upgrade with the same folders keeps its history').toBe(rows);
   });
 
   it('restarting with the same pair keeps the sync history', async () => {
