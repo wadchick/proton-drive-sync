@@ -42,9 +42,9 @@ async function settleWithConflicts(max = 6): Promise<Plan> {
   return plan;
 }
 
-/** Runs a resolution's operations as the engine does: true when every one completed. */
+/** Runs a resolution's operations as the engine does (dependent steps): true when every one completed. */
 async function run(ops: Operation[]): Promise<boolean> {
-  return (await h.execute({ operations: ops } as Plan)).summary.completed === ops.length;
+  return (await h.executeDependent(ops)).completed === ops.length;
 }
 
 function sameOnBothSides(): void {
@@ -301,6 +301,24 @@ describe('a resolution closes the conflict only once it has been applied', () =>
     await settleWithConflicts();
     expect([...h.localFiles().entries()]).toEqual([['a.txt', 'local']]);
     expect(isOpen(id)).toBe(false);
+    sameOnBothSides();
+  });
+
+  it('a step that fails after its retries stops the rest, so an immediate retry works', async () => {
+    const { id, copy } = await freshCreateCreate();
+    await settleWithConflicts();
+    // Trashing the original fails on every attempt (maxRetries is 2).
+    for (let i = 0; i < 3; i++) h.fake.injectFault('trash', { kind: 'connection' });
+    await expect(handler.resolve(id, 'keep_local', run)).rejects.toThrow(/stays open/);
+    expect(isOpen(id)).toBe(true);
+    expect(h.localFiles().get(copy), 'the local copy must not move after the failed step').toBe('local');
+    expect(h.localFiles().get('a.txt'), 'nor the original be recycled').toBe('remote');
+
+    // Retry right away, before any sync repairs anything.
+    await handler.resolve(id, 'keep_local', run);
+    await settleWithConflicts();
+    expect(isOpen(id)).toBe(false);
+    expect([...h.localFiles().entries()]).toEqual([['a.txt', 'local']]);
     sameOnBothSides();
   });
 

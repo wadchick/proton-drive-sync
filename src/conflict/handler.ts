@@ -210,8 +210,9 @@ export class ConflictHandler {
    * Every removal is a recycle or a trash; nothing is permanently deleted.
    */
   /**
-   * Apply the user's choice for conflict `id`. The operations it needs are handed to `run`
-   * (which executes them and reports whether every one completed), and the entry is closed
+   * Apply the user's choice for conflict `id`. The operations it needs are handed to `run`,
+   * which executes them in order as dependent steps (stopping at the first that does not
+   * complete) and reports whether every one completed. The entry is closed
    * only after they all did; otherwise it stays open to try again. Throws
    * `ResolutionError` when the choice cannot be applied (yet), changing nothing.
    */

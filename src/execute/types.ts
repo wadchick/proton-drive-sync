@@ -84,4 +84,11 @@ export interface ExecutionSummary {
   stoppedError?: unknown;
 }
 
-export type PlanForExecution = Pick<Plan, 'operations'>;
+export type PlanForExecution = Pick<Plan, 'operations'> & {
+  /**
+   * Each operation depends on the ones before it (a conflict resolution): execution stops at
+   * the first one that does not complete, so `completed` is then less than the number of
+   * operations. A sync plan's operations are independent and leave this unset.
+   */
+  dependent?: boolean;
+};
