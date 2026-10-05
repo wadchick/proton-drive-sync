@@ -20,6 +20,7 @@
 import { renameSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+import { assertWritableInsideRoot } from '../safety/pathGuard.js';
 import type { AuditLog } from '../audit/logger.js';
 import type { Conflict, LocalFingerprint, Operation, RemoteFingerprint } from '../reconcile/types.js';
 import type { RemoteDrive, RemoteNode } from '../remote/interface.js';
@@ -120,6 +121,8 @@ export class ConflictHandler {
       // Journal the local rename as a move so recovery can finish it.
       const entry = this.ctx.journal.plan({ op: 'conflict_rename_local', relPath: copyPath, previousRelPath: c.relPath, nodeUid: c.remoteUid ?? null, intended: { kind: 'conflict_rename_local', from: c.relPath, to: copyPath }, preState: { local } });
       this.ctx.journal.start(entry.id);
+      assertWritableInsideRoot(this.ctx.root, c.relPath);
+      assertWritableInsideRoot(this.ctx.root, copyPath);
       renameSync(path.join(this.ctx.root, c.relPath), path.join(this.ctx.root, copyPath));
       this.ctx.store.transaction(() => {
         // The original path now belongs to the remote version only; the copy is a new local file.
