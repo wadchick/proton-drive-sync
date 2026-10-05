@@ -14,7 +14,9 @@ import { unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { BaselineRow } from '../state/baseline.ts';
-import type { Operation } from '../reconcile/types.js';
+import type { JournalEntry } from '../state/journal.js';
+import { ConflictRepo } from '../state/misc.js';
+import type { LocalFingerprint, Operation, OperationKind } from '../reconcile/types.js';
 import type { RemoteNode } from '../remote/interface.js';
 import { sha1File } from '../remote/transfer.js';
 import { tempDir } from './localWrite.js';
@@ -48,6 +50,11 @@ export async function recoverJournal(ctx: ExecutorContext): Promise<RecoveryRepo
   }
 
   for (const entry of ctx.journal.unresolved()) {
+    // Conflict handling journals its local rename with its own entry kind.
+    if (entry.op === 'conflict_rename_local' && entry.status === 'in_progress') {
+      report[await recoverConflictRename(ctx, entry)]++;
+      continue;
+    }
     const op = entry.intended as Operation;
     if (entry.status === 'planned') {
       ctx.journal.abandon(entry.id, 'never started before restart');
@@ -57,7 +64,8 @@ export async function recoverJournal(ctx: ExecutorContext): Promise<RecoveryRepo
     }
     let verdict: Verdict;
     try {
-      verdict = await inspect(ctx, op);
+      // An entry this version cannot inspect is closed like an unclear outcome, never left to crash startup.
+      verdict = SUPPORTED.has(op.kind) ? await inspect(ctx, op) : { kind: 'abandoned', note: `unsupported journal entry kind ${op.kind}` };
     } catch (error) {
       verdict = { kind: 'abandoned', note: `inspection failed: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -92,6 +100,67 @@ export async function recoverJournal(ctx: ExecutorContext): Promise<RecoveryRepo
     });
   }
   return report;
+}
+
+const SUPPORTED: ReadonlySet<string> = new Set<OperationKind>([
+  'create_remote_folder', 'create_local_folder', 'upload', 'download', 'move_local', 'move_remote', 'recycle_local', 'trash_remote', 'update_baseline', 'remove_baseline',
+]);
+
+/**
+ * Finish or close a conflict rename interrupted by a crash (see ConflictHandler.handleContent),
+ * idempotently. The renamed item is recognised by inode: the device number of a btrfs volume
+ * changes across the reboot that usually precedes recovery.
+ */
+async function recoverConflictRename(ctx: ExecutorContext, entry: JournalEntry): Promise<'completed' | 'failed' | 'abandoned'> {
+  const intended = entry.intended as { from?: unknown; to?: unknown; conflictKind?: unknown };
+  const pre = (entry.preState as { local?: LocalFingerprint } | null)?.local;
+  const from = typeof intended.from === 'string' ? intended.from : null;
+  const to = typeof intended.to === 'string' ? intended.to : null;
+  const isOriginal = (relPath: string | null): boolean => {
+    if (relPath === null || pre === undefined) return false;
+    const st = localExists(ctx, relPath);
+    return st !== null && st.ino === pre.ino;
+  };
+  let outcome: 'completed' | 'failed' | 'abandoned';
+  let note: string;
+  if (from !== null && to !== null && isOriginal(to)) {
+    // The rename happened: drop the original path's row and make sure the conflict is in the inbox.
+    let remote: { uid: string; revisionUid: string | undefined; sha1: string | undefined; size: number | undefined } | null = null;
+    if (entry.nodeUid !== null) {
+      const node = await ctx.remote.getNode(entry.nodeUid).catch(() => null);
+      if (node !== null) remote = { uid: node.uid, revisionUid: node.revisionUid, sha1: node.claimedSha1, size: node.claimedSize };
+    }
+    const conflicts = new ConflictRepo(ctx.store);
+    ctx.store.transaction(() => {
+      ctx.baseline.remove(from);
+      if (conflicts.openForPath(from) === null) {
+        conflicts.add({ relPath: from, nodeUid: entry.nodeUid, kind: typeof intended.conflictKind === 'string' ? intended.conflictKind : 'content', local: { path: to, fingerprint: pre ?? null }, remote });
+      }
+      ctx.journal.complete(entry.id, { recovered: true, renamedTo: to });
+    });
+    outcome = 'completed';
+    note = `local version kept as ${to}; conflict recorded for ${from}`;
+  } else if (from !== null && to !== null && isOriginal(from) && localExists(ctx, to) === null) {
+    // Nothing happened: the next cycle detects the conflict again.
+    ctx.journal.fail(entry.id, 'recovery: the conflict rename never happened; the next cycle re-detects the conflict');
+    outcome = 'failed';
+    note = 'the rename never happened';
+  } else {
+    ctx.journal.abandon(entry.id, 'recovery: cannot tell where the conflicting file went');
+    ctx.quarantine.quarantine({ relPath: from ?? entry.previousRelPath, nodeUid: entry.nodeUid, reason: 'unknown_outcome', details: { journalId: entry.id, op: entry.op, note: 'interrupted conflict rename' } });
+    outcome = 'abandoned';
+    note = 'cannot tell where the conflicting file went';
+  }
+  ctx.audit.append({
+    kind: 'recovery',
+    op: entry.op,
+    message: `recovered in-progress conflict rename: ${outcome} (${note})`,
+    ...(entry.relPath !== null ? { path: entry.relPath } : {}),
+    ...(entry.nodeUid !== null ? { nodeUid: entry.nodeUid } : {}),
+    outcome: outcome === 'completed' ? 'ok' : outcome,
+    details: { journalId: entry.id },
+  });
+  return outcome;
 }
 
 function row(ctx: ExecutorContext, relPath: string, kind: 'file' | 'dir', node: RemoteNode, sha1: string | null): BaselineRow {

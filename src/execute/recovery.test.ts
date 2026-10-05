@@ -1,8 +1,9 @@
-import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Operation } from '../reconcile/types.js';
+import { ConflictRepo } from '../state/misc.js';
 import { sha1Hex } from '../testing/fakeRemote.js';
 import { SyncHarness } from '../testing/harness.js';
 import { tempDir } from './localWrite.js';
@@ -107,5 +108,63 @@ describe('recoverJournal', () => {
     const plan = await h.plan();
     expect(plan.operations.map((o) => o.kind)).toEqual([]);
     h.assertBaselineConsistent();
+  });
+});
+
+describe('recovery of an interrupted conflict rename', () => {
+  /** The exact journal entry ConflictHandler.handleContent writes and starts before renaming. */
+  function journalConflictRename(from: string, to: string, nodeUid: string | null): number {
+    const st = statSync(path.join(h.root, from));
+    const local = { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs };
+    const entry = h.journal.plan({ op: 'conflict_rename_local', relPath: to, previousRelPath: from, nodeUid, intended: { kind: 'conflict_rename_local', from, to }, preState: { local } });
+    h.journal.start(entry.id);
+    return entry.id;
+  }
+
+  async function syncedFile(relPath: string, content: string): Promise<string> {
+    h.write(relPath, content);
+    await h.settle();
+    const uid = h.remotePathToUid(relPath);
+    if (uid === undefined) throw new Error('not synced');
+    return uid;
+  }
+
+  it('finishes a rename that happened before the crash: drops the old row and records the conflict', async () => {
+    const uid = await syncedFile('same.txt', 'LOCAL');
+    const id = journalConflictRename('same.txt', 'same.conflict-host-1.txt', uid);
+    renameSync(path.join(h.root, 'same.txt'), path.join(h.root, 'same.conflict-host-1.txt'));
+
+    const report = await h.recover();
+
+    expect(report.completed).toBe(1);
+    expect(h.journal.get(id).status).toBe('completed');
+    expect(h.baseline.byPath('same.txt'), 'the original path now belongs to the remote version').toBeNull();
+    const open = new ConflictRepo(h.store).open();
+    expect(open.map((c) => [c.relPath, (c.local as { path?: string }).path])).toEqual([['same.txt', 'same.conflict-host-1.txt']]);
+    expect(h.quarantine.sets().paths.size).toBe(0);
+    // Running recovery again changes nothing.
+    await h.recover();
+    expect(new ConflictRepo(h.store).open()).toHaveLength(1);
+  });
+
+  it('closes a rename that never happened without quarantining, so the next cycle re-detects it', async () => {
+    const uid = await syncedFile('same.txt', 'LOCAL');
+    const id = journalConflictRename('same.txt', 'same.conflict-host-1.txt', uid);
+
+    const report = await h.recover();
+
+    expect(report.failed).toBe(1);
+    expect(h.journal.get(id).status).toBe('failed');
+    expect(h.baseline.byPath('same.txt')?.nodeUid, 'nothing happened, so the row stays').toBe(uid);
+    expect(new ConflictRepo(h.store).open()).toEqual([]);
+    expect(h.quarantine.sets().paths.size).toBe(0);
+  });
+
+  it('closes an unsupported journal entry safely instead of failing startup', async () => {
+    const entry = h.journal.plan({ op: 'mystery', relPath: 'x.txt', previousRelPath: null, nodeUid: null, intended: { kind: 'mystery' }, preState: {} });
+    h.journal.start(entry.id);
+
+    await expect(h.recover()).resolves.toBeDefined();
+    expect(h.journal.get(entry.id).status).toBe('abandoned');
   });
 });
