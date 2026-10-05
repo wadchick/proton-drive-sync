@@ -10,7 +10,7 @@ import path from 'node:path';
 import { AuditLog } from '../audit/logger.js';
 import { SecretRegistry } from '../audit/redact.js';
 import { DEFAULTS } from '../config/schema.js';
-import { baselineRowToItem, listRemoteTree, localViewFromSnapshot, remoteViewFromNodes } from '../engine/views.js';
+import { baselineRowToItem, listRemoteTree, localViewFromSnapshot, needsDigest, remoteViewFromNodes } from '../engine/views.js';
 import { Executor } from '../execute/executor.js';
 import { recoverJournal, type RecoveryReport } from '../execute/recovery.js';
 import type { ExecutionSummary, ExecutorConfig, ExecutorContext, ExecutorEvent, ExecutorHooks } from '../execute/types.js';
@@ -179,19 +179,24 @@ export class SyncHarness {
 
   // ---- cycle -------------------------------------------------------------
 
-  async buildInput(): Promise<ReconcileInput> {
+  /**
+   * `digest: 'engine'` hashes only what the engine would (see `needsDigest`), so a
+   * baseline row that wrongly vouches for changed content shows up as missing work.
+   */
+  async buildInput(options: { digest?: 'all' | 'engine' } = {}): Promise<ReconcileInput> {
     const baseline = new Map<string, BaselineItem>();
     for (const row of this.baseline.all()) baseline.set(row.relPath, baselineRowToItem(row));
     const snapshot = await scanLocalTree(this.root, { ignore: createIgnoreMatcher(DEFAULTS.ignore) });
-    const local = await localViewFromSnapshot(snapshot, this.digests, () => true);
+    const rule = options.digest === 'engine' ? (relPath: string) => needsDigest(this.baseline.byPath(relPath), snapshot.entries.get(relPath)) : () => true;
+    const local = await localViewFromSnapshot(snapshot, this.digests, rule);
     const nodes = await listRemoteTree(this.fake, this.remoteRootUid);
     const remote = remoteViewFromNodes(nodes, this.remoteRootUid);
     const sets = this.quarantine.sets();
     return { baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids };
   }
 
-  async plan(): Promise<Plan> {
-    return reconcile(await this.buildInput());
+  async plan(options: { digest?: 'all' | 'engine' } = {}): Promise<Plan> {
+    return reconcile(await this.buildInput(options));
   }
 
   async execute(plan: Plan, options: { includeWithheld?: boolean } = {}): Promise<{ executor: Executor; summary: ExecutionSummary }> {
