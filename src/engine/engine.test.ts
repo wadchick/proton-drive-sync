@@ -202,6 +202,27 @@ describe('SyncEngine', () => {
     expect(h.bundle?.controlTarget.listConflicts()).toEqual([]);
   });
 
+  it('resolves keep_local through the engine: every operation completes and the conflict closes', async () => {
+    h.write('doc.md', 'base');
+    await h.start();
+    await h.waitForConvergence();
+    h.bundle?.engine.pause();
+    await h.waitFor(['paused']);
+    h.write('doc.md', 'local');
+    h.fake.seedRevision(h.remotePathToUid('doc.md') ?? '', 'remote');
+    h.bundle?.engine.resume();
+    await h.waitFor(['attention']);
+    await h.waitForConvergence();
+    const conflict = h.bundle?.controlTarget.listConflicts()[0];
+
+    await h.bundle?.engine.resolveConflict(conflict?.id ?? 0, 'keep_local');
+    await h.waitForConvergence();
+
+    expect(h.bundle?.controlTarget.listConflicts()).toEqual([]);
+    expect([...h.localFiles().entries()]).toEqual([['doc.md', 'local']]);
+    expect(h.remoteFiles().get('doc.md')).toBe('local');
+  });
+
   it('quarantines a verification failure and re-reconciles after release', async () => {
     await h.start();
     await h.waitFor(['idle']);

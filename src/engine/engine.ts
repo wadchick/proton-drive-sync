@@ -659,10 +659,14 @@ export class SyncEngine extends EventEmitter {
     // Resolving changes the baseline and plans moves, recycles and trashes: refuse it for the wrong root.
     const failure = await this.preflightFailure(0);
     if (failure !== null) throw new Error(`cannot resolve conflict ${String(id)}: ${failure}`);
-    const ops = await this.deps.conflicts.resolve(id, choice);
-    if (ops.length > 0) await this.executePlan({ ...emptyPlan(), operations: ops });
-    this.trigger('conflict resolved');
-    this.publish();
+    // The conflict closes only once every operation of the resolution has completed.
+    const run = async (ops: Operation[]): Promise<boolean> => (await this.executePlan({ ...emptyPlan(), operations: ops })).completed === ops.length;
+    try {
+      await this.deps.conflicts.resolve(id, choice, run);
+    } finally {
+      this.trigger('conflict resolved');
+      this.publish();
+    }
   }
 
   releaseQuarantine(id: number): void {

@@ -2,10 +2,10 @@ import { renameSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { Plan } from '../reconcile/types.js';
+import type { Operation, Plan } from '../reconcile/types.js';
 import { ConflictRepo } from '../state/misc.ts';
 import { SyncHarness } from '../testing/harness.js';
-import { ConflictHandler } from './handler.js';
+import { ConflictHandler, ResolutionError } from './handler.js';
 import { conflictName, isConflictCopy, uniqueConflictPath } from './naming.js';
 
 let h: SyncHarness;
@@ -40,6 +40,11 @@ async function settleWithConflicts(max = 6): Promise<Plan> {
     plan = await h.plan();
   }
   return plan;
+}
+
+/** Runs a resolution's operations as the engine does: true when every one completed. */
+async function run(ops: Operation[]): Promise<boolean> {
+  return (await h.execute({ operations: ops } as Plan)).summary.completed === ops.length;
 }
 
 function sameOnBothSides(): void {
@@ -168,9 +173,8 @@ describe('divergent moves', () => {
     expect(entry.remote).toEqual({ path: 'remote-name.txt' });
     // Still blocked, still no operations.
     expect((await h.plan()).operations).toEqual([]);
-    const ops = await handler.resolve(entry.id, 'keep_remote');
+    const ops = await handler.resolve(entry.id, 'keep_remote', run);
     expect(ops.map((o) => o.kind)).toEqual(['move_local']);
-    await h.execute({ ...plan, operations: ops });
     await settleWithConflicts();
     expect([...h.localFiles().keys()]).toEqual(['remote-name.txt']);
     sameOnBothSides();
@@ -190,10 +194,9 @@ describe('divergent moves', () => {
     const f = entries.find((e) => e.relPath === 'f.txt');
     const g = entries.find((e) => e.relPath === 'g.txt');
     if (f === undefined || g === undefined) throw new Error('entries');
-    const opsF = await handler.resolve(f.id, 'keep_local');
+    const opsF = await handler.resolve(f.id, 'keep_local', run);
     expect(opsF.map((o) => o.kind)).toEqual(['move_remote']);
-    await h.execute({ ...plan, operations: opsF });
-    await handler.resolve(g.id, 'keep_both');
+    await handler.resolve(g.id, 'keep_both', run);
     await settleWithConflicts();
     const local = h.localFiles();
     expect([...local.keys()].sort()).toEqual(['lf.txt', 'lg.txt', 'rg.txt']);
@@ -217,9 +220,8 @@ describe('inbox resolution of content conflicts', () => {
 
   it('keep_remote recycles the local conflict copy and trashes its remote twin', async () => {
     const { id, copy } = await contentConflict();
-    const ops = await handler.resolve(id, 'keep_remote');
+    const ops = await handler.resolve(id, 'keep_remote', run);
     expect(ops.map((o) => o.kind).sort()).toEqual(['recycle_local', 'trash_remote']);
-    await h.execute({ operations: ops } as Plan);
     await settleWithConflicts();
     expect([...h.localFiles().keys()]).toEqual(['doc.md']);
     expect(h.localFiles().get('doc.md')).toBe('remote edit');
@@ -232,9 +234,8 @@ describe('inbox resolution of content conflicts', () => {
 
   it('keep_local replaces the original with the local version (old version recycled and trashed, never deleted)', async () => {
     const { id } = await contentConflict();
-    const ops = await handler.resolve(id, 'keep_local');
-    expect(ops.map((o) => o.kind)).toEqual(['recycle_local', 'trash_remote', 'move_remote', 'move_local']);
-    await h.execute({ operations: ops } as Plan);
+    const ops = await handler.resolve(id, 'keep_local', run);
+    expect(ops.map((o) => o.kind)).toEqual(['trash_remote', 'recycle_local', 'move_remote', 'move_local']);
     await settleWithConflicts();
     expect([...h.localFiles().entries()]).toEqual([['doc.md', 'local edit']]);
     expect(h.recycledContents()).toEqual(['remote edit']);
@@ -245,13 +246,75 @@ describe('inbox resolution of content conflicts', () => {
 
   it('keep_both leaves both files synced as independent items', async () => {
     const { id, copy } = await contentConflict();
-    const ops = await handler.resolve(id, 'keep_both');
+    const ops = await handler.resolve(id, 'keep_both', run);
     expect(ops).toEqual([]);
     await settleWithConflicts();
     expect(h.localFiles().size).toBe(2);
     expect(h.localFiles().has(copy)).toBe(true);
     expect(new ConflictRepo(h.store).open()).toEqual([]);
-    await expect(handler.resolve(id, 'keep_both')).rejects.toThrow(/already resolved/);
+    await expect(handler.resolve(id, 'keep_both', run)).rejects.toThrow(/already resolved/);
     sameOnBothSides();
+  });
+});
+
+
+describe('a resolution closes the conflict only once it has been applied', () => {
+  /** A create/create conflict on a.txt, handled (local copy renamed) but nothing executed yet. */
+  async function freshCreateCreate(): Promise<{ id: number; copy: string }> {
+    h.write('a.txt', 'local');
+    h.fake.seedFile(h.remoteRootUid, 'a.txt', 'remote');
+    const plan = await h.plan();
+    expect(plan.conflicts.map((c) => c.kind)).toEqual(['create_create']);
+    const [entry] = await handler.handleNew(plan.conflicts);
+    if (entry === undefined) throw new Error('no entry');
+    return { id: entry.id, copy: (entry.local as { path: string }).path };
+  }
+  const isOpen = (id: number): boolean => new ConflictRepo(h.store).open().some((c) => c.id === id);
+  const neverRun = (): Promise<boolean> => Promise.reject(new Error('no operation may run'));
+
+  it('keep_local right after the conflict, before the copy is synced, is refused and the entry stays open', async () => {
+    const { id, copy } = await freshCreateCreate();
+    await expect(handler.resolve(id, 'keep_local', neverRun)).rejects.toThrow(ResolutionError);
+    await expect(handler.resolve(id, 'keep_local', neverRun)).rejects.toThrow(/not synced to Proton yet/);
+    expect(isOpen(id)).toBe(true);
+    expect([...h.localFiles().keys()]).toEqual([copy]);
+    expect(h.remoteFiles().get('a.txt')).toBe('remote');
+  });
+
+  it('keep_local does not remove the original when the copy failed to upload', async () => {
+    const { id } = await freshCreateCreate();
+    h.fake.injectFault('upload', { kind: 'mismatch_upload' }); // the copy's upload fails
+    await h.execute(await h.plan());
+    expect(h.localFiles().get('a.txt'), 'the remote version is downloaded and paired').toBe('remote');
+
+    await expect(handler.resolve(id, 'keep_local', neverRun)).rejects.toThrow(/not synced to Proton yet/);
+    expect(isOpen(id)).toBe(true);
+    expect(h.fake.trashedUids(), 'the original must not be trashed').toEqual([]);
+    expect(h.recycledContents(), 'nor recycled locally').toEqual([]);
+  });
+
+  it('keep_local works once the copy has synced', async () => {
+    const { id } = await freshCreateCreate();
+    await settleWithConflicts();
+    const ops = await handler.resolve(id, 'keep_local', run);
+    expect(ops.map((o) => o.kind)).toContain('move_local');
+    await settleWithConflicts();
+    expect([...h.localFiles().entries()]).toEqual([['a.txt', 'local']]);
+    expect(isOpen(id)).toBe(false);
+    sameOnBothSides();
+  });
+
+  it('an operation that does not complete leaves the entry open to try again', async () => {
+    const { id, copy } = await freshCreateCreate();
+    await settleWithConflicts();
+    h.fake.injectFault('trash', { kind: 'auth' }); // execution stops before the trash completes
+    await expect(handler.resolve(id, 'keep_remote', run)).rejects.toThrow(/stays open/);
+    expect(isOpen(id)).toBe(true);
+
+    await handler.resolve(id, 'keep_remote', run);
+    await settleWithConflicts();
+    expect(isOpen(id)).toBe(false);
+    expect(h.localFiles().has(copy)).toBe(false);
+    expect(h.localFiles().get('a.txt')).toBe('remote');
   });
 });
