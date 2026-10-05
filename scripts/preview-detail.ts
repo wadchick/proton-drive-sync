@@ -93,7 +93,8 @@ const SCENARIOS: Record<string, Scenario> = {
         { sha1: '710e12b8c74b01e11d655f035edd63881556d4b1', size: 6475, mtimeMs: NOW - 9 * MIN }),
       conflict(2, 'Docs/Proposal.odt', 'delete_vs_edit', { deleted: true }, { deleted: false }),
       conflict(3, 'Docs/Old notes.txt', 'delete_vs_edit', { deleted: false }, { deleted: true }),
-      conflict(4, 'Projects/site/index.html', 'divergent_move', { path: 'Projects/www/index.html', fingerprint: { size: 2210, mtimeMs: NOW - 40 * MIN } }, { size: 2210, mtimeMs: NOW - 38 * MIN }),
+      // A move records only each side's destination.
+      conflict(4, 'Projects/site/index.html', 'divergent_move', { path: 'Projects/www/index.html' }, { path: 'Projects/public/index.html' }),
       conflict(5, 'Shared/Very/Long/Folder/Structure/That/Goes/On/And/On/meeting-notes-final-v2.md', 'create_create',
         { path: 'Shared/Very/Long/Folder/Structure/That/Goes/On/And/On/meeting-notes-final-v2.conflict-laptop.md', fingerprint: { size: 1_843_200, mtimeMs: NOW - 5 * MIN } },
         { sha1: 'abc123', size: 1_901_000, mtimeMs: NOW - 4 * MIN }),

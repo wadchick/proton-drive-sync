@@ -138,7 +138,8 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   };
   // One side of a conflict: a readable size (and modified time when known), with the
   // details on hover. The local side keeps its file details under `fingerprint`.
-  const side = (value: unknown): string => {
+  // `where` and `kind` name a recorded path: a move's destination on that side, or the kept local copy.
+  const side = (value: unknown, where: 'local' | 'remote', kind: string): string => {
     if (typeof value !== 'object' || value === null) return '--';
     const record = value as Record<string, unknown>;
     if (record['deleted'] === true) return 'Deleted';
@@ -149,7 +150,10 @@ export function applySnapshot(doc: Document, data: DetailData): void {
     const mtime = fp['mtimeMs'] ?? fp['mtime'];
     const modified = typeof mtime === 'number' ? when(mtime) : null;
     const tip: string[] = [];
-    if (typeof record['path'] === 'string') tip.push('Local copy: ' + record['path']);
+    if (typeof record['path'] === 'string') {
+      const label = kind === 'divergent_move' ? (where === 'local' ? 'Local destination' : 'Proton destination') : where === 'local' ? 'Local copy' : 'Proton path';
+      tip.push(label + ': ' + record['path']);
+    }
     if (size !== null) tip.push('Size: ' + num(size) + ' bytes');
     if (modified !== null) tip.push('Modified: ' + modified);
     if (typeof record['sha1'] === 'string' && record['sha1'] !== '') tip.push('SHA-1: ' + record['sha1']);
@@ -307,7 +311,10 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   // Proton documents live only on Proton; their full path is under the Proton Drive folder.
   const remoteRoot = data.roots ? data.roots.remote.replace(/\/+$/, '') + '/' : '';
   const docRows = docs.shown.map((path) => {
-    const modified = (s.protonDocumentModifiedAt as Record<string, number> | undefined)?.[path];
+    // Only an own, finite time counts: a name like "__proto__" must not pick up an inherited member.
+    const times = s.protonDocumentModifiedAt as Record<string, unknown> | undefined;
+    const raw = times !== undefined && Object.prototype.hasOwnProperty.call(times, path) ? times[path] : undefined;
+    const modified = typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined;
     // Shown inside the sync folder like the other tables; the full Proton path is on hover.
     return '<tr>' + pathCell(path, '', remoteRoot + path) + '<td class="nowrap">' + (modified === undefined ? '--' : '<time datetime="' + esc(new Date(modified).toISOString()) + '">' + esc(when(modified)) + '</time>') + '</td></tr>';
   }).join('');
@@ -338,7 +345,7 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   };
   const conflictRows = conflicts.shown.map((row) =>
     '<tr>' + pathCell(row.relPath, '<div class="sub" title="' + esc(row.kind) + '">' + esc(happened(row)) + '</div>') +
-    '<td class="nowrap">' + side(row.local) + '</td><td class="nowrap">' + side(row.remote) + '</td>' +
+    '<td class="nowrap">' + side(row.local, 'local', row.kind) + '</td><td class="nowrap">' + side(row.remote, 'remote', row.kind) + '</td>' +
     '<td class="nowrap actions-cell">' + RESOLVE.map(([choice, label, svg]) =>
       '<button type="button" class="btn icon" title="' + label + '" aria-label="' + label + '" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'" + choice + "'})\">" + svg + '</button>').join('') +
     '</td></tr>').join('');

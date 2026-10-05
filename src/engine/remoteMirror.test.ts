@@ -30,6 +30,17 @@ describe('RemoteMirror modifiedAt', () => {
     expect(mirror.modifiedAt(dated.uid)).toBeGreaterThan(0);
     expect(mirror.modifiedAt('no-such-uid')).toBeNull();
   });
+
+  it('keeps a Proton document named like an Object member as its own entry', async () => {
+    const { fake, root } = seedTree();
+    fake.seedProtonDocument(root, '__proto__');
+    const mirror = new RemoteMirror(fake, root, () => 1000);
+    await mirror.fullRefresh();
+    const times = mirror.library().protonDocumentModifiedAt;
+    expect(Object.keys(times)).toEqual(['__proto__']);
+    // It survives the trip to the page as a number.
+    expect(typeof (JSON.parse(JSON.stringify(times)) as Record<string, unknown>)['__proto__']).toBe('number');
+  });
 });
 
 describe('RemoteMirror completeness', () => {

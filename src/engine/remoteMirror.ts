@@ -104,7 +104,8 @@ export class RemoteMirror {
    */
   library(): { files: number; protonDocumentPaths: string[]; protonDocumentModifiedAt: Record<string, number>; syncableFilePaths: string[] } {
     const protonDocumentPaths: string[] = [];
-    const protonDocumentModifiedAt: Record<string, number> = {};
+    // No prototype: a document named like an Object member (e.g. "__proto__") stays an own entry.
+    const protonDocumentModifiedAt = Object.create(null) as Record<string, number>;
     const syncableFilePaths: string[] = [];
     let files = 0;
     for (const node of this.nodes.values()) {

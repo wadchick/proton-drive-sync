@@ -109,6 +109,10 @@ describe('applySnapshot', () => {
       { id: 4, relPath: 'c', kind: 'divergent_move', local: {}, remote: {} },
       { id: 5, relPath: 'd', kind: 'create_create', local: {}, remote: {} },
     ])).toEqual(['Deleted here, edited on Proton', 'Edited here, deleted on Proton', 'Moved to different places', 'Created on both sides']);
+    // A move records each side's destination; the tooltips say which is which.
+    applySnapshot(document, { ...data, conflicts: [{ id: 6, relPath: 'site/index.html', kind: 'divergent_move', local: { path: 'www/index.html' }, remote: { path: 'public/index.html' } }] });
+    const moveTips = Array.from(el('conflicts').querySelectorAll('td span[title]')).map((span) => span.getAttribute('title'));
+    expect(moveTips).toEqual(['Local destination: www/index.html', 'Proton destination: public/index.html']);
     applySnapshot(document, data);
     // Proton documents show their full path under the Proton Drive folder.
     applySnapshot(document, { ...data, status: { ...status, protonDocumentPaths: ['Notes/Agenda', 'Undated'], protonDocumentModifiedAt: { 'Notes/Agenda': 1_700_000_000_000 } } });
@@ -117,6 +121,11 @@ describe('applySnapshot', () => {
     // Names read inside the sync folder like the other tables; the full Proton path is the tooltip.
     expect(docCells).toEqual(['Notes/Agenda', shown, 'Undated', '--']);
     expect(el('proton-documents').querySelector('.trunc-start')?.getAttribute('title')).toBe('/my-files/Sync/Notes/Agenda');
+    // A document named "__proto__" renders with its own time, and a missing or bad time reads "--",
+    // never an inherited member (which used to throw on every refresh).
+    const odd = JSON.parse('{"__proto__": 1700000000000, "Bad": "soon"}') as Record<string, number>;
+    applySnapshot(document, { ...data, status: { ...status, protonDocumentPaths: ['__proto__', 'Bad', 'constructor'], protonDocumentModifiedAt: odd } });
+    expect(Array.from(el('proton-documents').querySelectorAll('td')).map((td) => td.textContent)).toEqual(['__proto__', shown, 'Bad', '--', 'constructor', '--']);
     applySnapshot(document, data);
     // Each section opens with a line saying what it holds; the recycle bin names its folder.
     expect(el('recycle').querySelector('[data-intro]')?.textContent).toBe('Local files moved aside instead of deleted or overwritten, kept in /home/u/Drive/.proton-sync/recycle. Copy one back to restore it.');
