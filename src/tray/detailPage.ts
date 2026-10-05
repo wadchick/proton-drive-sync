@@ -9,6 +9,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 
 import type { ControlTarget } from '../engine/control.js';
+import { packageVersion } from '../version.js';
 import { clientScript } from './detailView.js';
 
 export class DetailPageServer {
@@ -58,7 +59,7 @@ export class DetailPageServer {
     const route = parts.slice(1).join('/');
     try {
       if (req.method === 'GET' && route === '') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(PAGE);
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(detailDocument(packageVersion()));
         return;
       }
       if (req.method === 'GET' && route === 'api/state') {
@@ -149,7 +150,10 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
-const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proton Drive Sync</title>
+/** The details page document. A null version omits the version line and keeps the title. */
+export function detailDocument(version: string | null): string {
+  const versionLine = version === null ? '' : `<p class="muted">Version ${escapeHtml(version)}</p>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proton Drive Sync</title>
 <style>
 :root {
   --pds-mint: #cdfae4;
@@ -210,6 +214,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-siz
 <main class="wrap">
 <header class="card">
 <h1>Proton Drive Sync</h1>
+${versionLine}
 <p class="status-row"><span class="pill" id="state"></span><span id="glance"></span><span id="reason"></span></p>
 <p id="flags"></p>
 <p class="actions"><button type="button" class="btn" id="act-pause" onclick="act('pause')">Pause</button><button type="button" class="btn" id="act-resume" onclick="act('resume')">Resume</button><button type="button" class="btn" id="act-sync" onclick="act('sync')">Sync now</button></p>
@@ -226,3 +231,13 @@ pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-siz
 <script>
 ${clientScript()}
 </script></body></html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}

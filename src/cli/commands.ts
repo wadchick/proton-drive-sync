@@ -19,6 +19,7 @@ import { SESSION_SECRET_NAME } from '../remote/proton/sessionCredentials.js';
 import type { SessionState } from '../remote/proton/sessionState.js';
 import { RecycleBin } from '../safety/recycle.js';
 import { DetailPageServer } from '../tray/detailPage.js';
+import { packageVersion } from '../version.js';
 import { formatStatus, formatTable } from './output.js';
 import { secretStoreFor, type CliContext } from './runtime.js';
 
@@ -379,6 +380,7 @@ export interface DoctorReport {
   remoteRoot: string | null;
   configFile: string | null;
   detailUrl: string | null;
+  version: string | null;
 }
 
 /** Copy only the doctor fields. Anything else, including a session, is dropped. */
@@ -392,6 +394,7 @@ export function doctorReport(fields: DoctorReport): DoctorReport {
     remoteRoot: fields.remoteRoot,
     configFile: fields.configFile,
     detailUrl: fields.detailUrl,
+    version: fields.version,
   };
 }
 
@@ -442,6 +445,7 @@ export async function doctor(deps: CommandDeps, json: boolean): Promise<number> 
     remoteRoot: config?.remoteRoot ?? null,
     configFile: config !== null ? deps.ctx.paths.configFile : null,
     detailUrl: await runningDetailUrl(deps),
+    version: packageVersion(),
   });
   const human = [
     `Node.js 24: ${report.nodeOk ? 'ok' : 'missing'}`,
@@ -452,6 +456,7 @@ export async function doctor(deps: CommandDeps, json: boolean): Promise<number> 
     `Remote folder: ${report.remoteRoot ?? '-'}`,
     `Config file: ${report.configFile ?? '-'}`,
     `Details: ${report.detailUrl ?? '-'}`,
+    `Version: ${report.version ?? '-'}`,
   ];
   out(deps, json, human, report);
   return 0;
