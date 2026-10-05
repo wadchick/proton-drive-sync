@@ -2,7 +2,10 @@
  * SyncEngine: the cycle scheduler and state machine.
  *
  * A cycle is: gather local snapshot and remote view -> compute digests for
- * candidates -> reconcile -> handle conflicts -> preflight -> brake -> execute.
+ * candidates -> reconcile -> preflight -> handle conflicts -> brake -> execute.
+ * Preflight (root identity, store, disk, remote root) passes before anything
+ * changes files or state: journal recovery, conflict handling, a confirmed held
+ * plan and a conflict resolution included.
  * Cycles are single-flight; triggers (local changes, remote events, timers,
  * "sync now") set a dirty flag and the loop re-runs once the current cycle
  * ends. Only user actions change pause state.
@@ -20,7 +23,7 @@ import { createIgnoreMatcher, type IgnoreMatcher } from '../local/ignore.js';
 import type { LocalSnapshot } from '../local/snapshot.js';
 import type { LocalWatcher, LocalWatcherEvent } from '../local/watcher.js';
 import { reconcile } from '../reconcile/reconcile.js';
-import type { BaselineItem, LocalView, Operation, Plan } from '../reconcile/types.js';
+import type { BaselineItem, LocalView, Operation, Plan, RemoteView } from '../reconcile/types.js';
 import type { RemoteChangeFeed } from '../remote/events.js';
 import { RemoteError } from '../remote/interface.js';
 import type { Logger } from '../remote/proton/logger.js';
@@ -32,7 +35,7 @@ import type { BaselineRepo } from '../state/baseline.ts';
 import type { ConflictRepo, ScanRepo } from '../state/misc.ts';
 import type { RemoteMirror } from './remoteMirror.js';
 import { canTransition, IllegalStateTransitionError, initialStatus, summarize, type EngineState, type EngineStatus, type TransferStatus } from './status.js';
-import { baselineRowToItem, localViewFromSnapshot } from './views.js';
+import { baselineRowToItem, localViewFromSnapshot, needsDigest } from './views.js';
 
 export interface EngineDeps {
   config: SyncConfig;
@@ -75,6 +78,8 @@ export class SyncEngine extends EventEmitter {
   private stopped = false;
   private lastSnapshot: LocalSnapshot | null = null;
   private localRootAvailable = true;
+  /** Journal recovery waits for a passing preflight, so it may run in a later cycle than startup. */
+  private journalRecovered = false;
   private readonly transfers = new Map<string, TransferStatus>();
   private lastRemoteFailure: string | null = null;
   private readonly ignoreMatcher: IgnoreMatcher;
@@ -199,15 +204,8 @@ export class SyncEngine extends EventEmitter {
       return;
     }
     if (this.status.state !== 'starting' && this.status.state !== 'needs_login') return;
-    if (this.deps.config.dryRun) {
-      // Recovery updates the baseline, quarantine and temp files from a previous run's journal;
-      // a preview leaves that to the next real run.
-      this.deps.audit.append({ kind: 'recovery', message: 'dry run: journal recovery deferred to the next real run', outcome: 'skipped' });
-    } else {
-      this.setState('scanning', 'recovering journal');
-      const report = await recoverJournal(this.ctx());
-      this.deps.audit.append({ kind: 'recovery', message: `journal recovery: ${String(report.completed)} completed, ${String(report.failed)} failed, ${String(report.abandoned)} abandoned`, details: { ...report } });
-    }
+    this.setState('scanning', 'recovering journal');
+    await this.recoverJournalIfSafe();
 
     this.deps.watcher.requestFullScan('startup');
     await this.deps.watcher.start();
@@ -384,7 +382,7 @@ export class SyncEngine extends EventEmitter {
     this.status = { ...this.status, lastCycleAt: this.now() };
 
     // Inputs.
-    const snapshot = this.deps.watcher.currentSnapshot ?? this.lastSnapshot;
+    let snapshot = this.deps.watcher.currentSnapshot ?? this.lastSnapshot;
     if (snapshot === null) return { plan: emptyPlan(), summary: null, held: false, skipped: 'no local snapshot yet' };
     this.lastSnapshot = snapshot;
     if (!this.deps.mirror.isComplete) {
@@ -395,16 +393,17 @@ export class SyncEngine extends EventEmitter {
         return { plan: emptyPlan(), summary: null, held: false, skipped: `remote unavailable: ${this.lastRemoteFailure ?? ''}` };
       }
     }
+    if (!this.journalRecovered) {
+      const recovery = await this.recoverJournalIfSafe();
+      if (recovery === 'blocked') return { plan: emptyPlan(), summary: null, held: false, skipped: 'preflight: journal recovery deferred' };
+      // Recovery may have changed local files after the snapshot was taken.
+      snapshot = await this.rescanLocal();
+    }
     this.refreshLibraryCache();
     const baselineRows = this.deps.baseline.all();
     const baseline = new Map<string, BaselineItem>();
     for (const row of baselineRows) baseline.set(row.relPath, baselineRowToItem(row));
-    const needDigest = (relPath: string): boolean => {
-      const row = this.deps.baseline.byPath(relPath);
-      const entry = snapshot.entries.get(relPath);
-      if (row === null || entry === undefined) return true;
-      return row.localIno !== entry.ino || row.localSize !== entry.size || row.localMtimeMs !== entry.mtimeMs || row.localSha1 === null;
-    };
+    const needDigest = (relPath: string): boolean => needsDigest(this.deps.baseline.byPath(relPath), snapshot.entries.get(relPath));
     const local = this.withHiddenPaths(await localViewFromSnapshot(snapshot, this.deps.digests, needDigest, this.localRootAvailable), snapshot, baseline);
     const remote = this.deps.mirror.view();
     const sets = this.deps.quarantine.sets();
@@ -429,7 +428,11 @@ export class SyncEngine extends EventEmitter {
       }
       return this.gateAndExecute(plan);
     }
+    // Real conflict handling happens only in the configured root: the root must pass preflight
+    // before even a rename.
     if (plan.conflicts.length > 0) {
+      const failure = await this.preflightFailure(plannedDownloadBytes(plan, this.deps.mirror.view()));
+      if (failure !== null) return { plan, summary: null, held: false, skipped: `preflight: ${failure}` };
       await this.deps.conflicts.handleNew(plan.conflicts);
       // Re-plan so the renamed copies are included in this cycle.
       const snapshot2 = await this.rescanLocal();
@@ -453,17 +456,14 @@ export class SyncEngine extends EventEmitter {
 
   private async gateAndExecute(plan: Plan): Promise<CycleResult> {
     if (plan.operations.length === 0 && plan.withheld.length === 0) {
+      // Nothing left to confirm: drop a held plan that no longer applies (one a cycle planned
+      // before a confirmed plan ran can hold the same, already applied deletes again).
+      if (this.deps.gate.current !== null) this.deps.gate.evaluate(plan, this.deps.baseline.count());
       this.finishCycle(true);
       return { plan, summary: null, held: false, skipped: null };
     }
-    const remoteItems = this.deps.mirror.view().items;
-    const plannedDownloadBytes = plan.operations.reduce((n, o) => (o.kind === 'download' ? n + (remoteItems.get(o.remoteUid)?.size ?? 0) : n), 0);
-    const preflight = await this.deps.preflight(plannedDownloadBytes);
-    if (!preflight.ok) {
-      this.deps.audit.append({ kind: 'safety', op: 'preflight', message: `preflight failed: ${preflight.reason}: ${preflight.detail}`, outcome: 'failed' });
-      this.setStateSafely('error', `${preflight.reason}: ${preflight.detail}`);
-      return { plan, summary: null, held: false, skipped: `preflight: ${preflight.reason}` };
-    }
+    const failure = await this.preflightFailure(plannedDownloadBytes(plan, this.deps.mirror.view()));
+    if (failure !== null) return { plan, summary: null, held: false, skipped: `preflight: ${failure}` };
     const gate = this.deps.gate.evaluate(plan, this.deps.baseline.count());
     if (gate.status === 'held') {
       // Unaffected operations still run.
@@ -478,6 +478,39 @@ export class SyncEngine extends EventEmitter {
     const summary = await this.executePlan(gate.plan);
     this.finishCycle(summary.failed === 0 && summary.stoppedEarly === null);
     return { plan, summary, held: false, skipped: null };
+  }
+
+  /**
+   * Run the preflight checks. On failure, audit it, enter the error state and return the
+   * reason; null when it is safe to change files and state.
+   */
+  private async preflightFailure(plannedDownloadBytes: number): Promise<string | null> {
+    const preflight = await this.deps.preflight(plannedDownloadBytes);
+    if (preflight.ok) return null;
+    this.deps.audit.append({ kind: 'safety', op: 'preflight', message: `preflight failed: ${preflight.reason}: ${preflight.detail}`, outcome: 'failed' });
+    this.setStateSafely('error', `${preflight.reason}: ${preflight.detail}`);
+    return preflight.reason;
+  }
+
+  /** Journal recovery redoes or rolls back file changes, so it too needs a passing preflight. */
+  private async recoverJournalIfSafe(): Promise<'recovered' | 'blocked'> {
+    if (this.deps.config.dryRun) {
+      // Recovery updates the baseline, quarantine and temp files from a previous run's journal;
+      // a preview leaves that to the next real run.
+      this.deps.audit.append({ kind: 'recovery', message: 'dry run: journal recovery deferred to the next real run', outcome: 'skipped' });
+      this.journalRecovered = true;
+      return 'recovered';
+    }
+    try {
+      if ((await this.preflightFailure(0)) !== null) return 'blocked';
+    } catch (error) {
+      this.remoteFailure(error);
+      return 'blocked';
+    }
+    const report = await recoverJournal(this.ctx());
+    this.deps.audit.append({ kind: 'recovery', message: `journal recovery: ${String(report.completed)} completed, ${String(report.failed)} failed, ${String(report.abandoned)} abandoned`, details: { ...report } });
+    this.journalRecovered = true;
+    return 'recovered';
   }
 
   private async executePlan(plan: Plan): Promise<ExecutionSummary> {
@@ -589,7 +622,21 @@ export class SyncEngine extends EventEmitter {
   }
 
   async confirmHeldPlan(id: string): Promise<CycleResult | null> {
+    const held = this.deps.gate.current;
+    // Take the plan before any await, so a cycle running meanwhile cannot hold it again.
     const plan = this.deps.gate.confirm(id);
+    let failure: string | null;
+    try {
+      failure = await this.preflightFailure(plannedDownloadBytes(plan, this.deps.mirror.view()));
+    } catch (error) {
+      if (held !== null) this.deps.gate.restore(held);
+      throw error;
+    }
+    if (failure !== null) {
+      // Refused, not rejected: the plan stays held for the user to confirm later.
+      if (held !== null) this.deps.gate.restore(held);
+      return { plan, summary: null, held: true, skipped: `preflight: ${failure}` };
+    }
     const summary = await this.executePlan(plan);
     this.finishCycle(summary.failed === 0);
     return { plan, summary, held: false, skipped: null };
@@ -605,6 +652,9 @@ export class SyncEngine extends EventEmitter {
     // Resolving rewrites baseline rows and closes the conflict directly; only its file operations
     // go through the (dry-run) executor, so in a preview it would record changes that never happen.
     if (this.deps.config.dryRun) throw new Error('Dry run: conflicts are not resolved; turn dry run off to resolve them');
+    // Resolving changes the baseline and plans moves, recycles and trashes: refuse it for the wrong root.
+    const failure = await this.preflightFailure(0);
+    if (failure !== null) throw new Error(`cannot resolve conflict ${String(id)}: ${failure}`);
     const ops = await this.deps.conflicts.resolve(id, choice);
     if (ops.length > 0) await this.executePlan({ ...emptyPlan(), operations: ops });
     this.trigger('conflict resolved');
@@ -620,6 +670,11 @@ export class SyncEngine extends EventEmitter {
 
 function emptyPlan(): Plan {
   return { operations: [], conflicts: [], blocked: [], withheld: [], requiresConfirmation: null, firstSync: false, stats: { deletes: 0, replaces: 0, transfers: 0 } };
+}
+
+/** Bytes a plan downloads, for the preflight's free-space check. */
+function plannedDownloadBytes(plan: Plan, remote: RemoteView): number {
+  return plan.operations.reduce((n, o) => (o.kind === 'download' ? n + (remote.items.get(o.remoteUid)?.size ?? 0) : n), 0);
 }
 
 function describeOp(o: Operation): string {
