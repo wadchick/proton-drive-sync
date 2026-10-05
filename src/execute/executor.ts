@@ -18,6 +18,7 @@ import { RemoteError, type RemoteNode } from '../remote/interface.js';
 import { defaultSleep } from '../remote/proton/apiClient.js';
 import { uploadVerified } from '../remote/transfer.js';
 import { atomicDownload, DiskFullError, fingerprintMismatch, TargetChangedError } from './localWrite.js';
+import { assertWritableInsideRoot } from '../safety/pathGuard.js';
 import { SimulatedCrashError, type ExecutionSummary, type ExecutorContext, type ExecutorEvent, type ExecutorStep, type PlanForExecution, type RemoteChange } from './types.js';
 
 export class PreconditionError extends Error {
@@ -426,6 +427,7 @@ export class Executor {
       case 'create_local_folder': {
         const node = await remote.getNode(op.remoteUid);
         if (node === null) throw new PreconditionError(`remote folder ${op.remoteUid} vanished`);
+        assertWritableInsideRoot(root, op.relPath);
         await mkdir(path.join(root, op.relPath), { recursive: false });
         return { upserts: [this.localRow(op.relPath, 'dir', node, null)], removeSubtrees: [], renames: [], outcome: { nodeUid: node.uid } };
       }
@@ -456,7 +458,10 @@ export class Executor {
       case 'move_local': {
         const from = path.join(root, op.from);
         const to = path.join(root, op.to);
+        assertWritableInsideRoot(root, op.from);
+        assertWritableInsideRoot(root, op.to);
         mkdirSync(path.dirname(to), { recursive: true });
+        assertWritableInsideRoot(root, op.to);
         await rename(from, to);
         const node = await remote.getNode(op.remoteUid);
         if (node === null) throw new VerificationError(`remote node ${op.remoteUid} vanished after local move`);

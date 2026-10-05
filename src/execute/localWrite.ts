@@ -23,6 +23,7 @@ import type { LocalFingerprint } from '../reconcile/types.js';
 import { RemoteError, type RemoteDrive, type RemoteNode } from '../remote/interface.js';
 import { downloadVerified, type VerifiedDownload } from '../remote/transfer.js';
 import type { RecycleBin } from '../safety/recycle.js';
+import { assertWritableInsideRoot, UnsafePathError } from '../safety/pathGuard.js';
 
 export class TargetChangedError extends Error {
   constructor(relPath: string, detail: string) {
@@ -43,6 +44,8 @@ export function tempDir(root: string): string {
 }
 
 export function newTempPath(root: string): string {
+  // The internal directory itself must not be a symlink out of the root.
+  assertWritableInsideRoot(root, `${INTERNAL_DIR_NAME}/tmp/download`);
   const dir = tempDir(root);
   mkdirSync(dir, { recursive: true });
   return path.join(dir, `download-${randomUUID()}`);
@@ -102,7 +105,10 @@ export async function atomicDownload(
     await options.beforeCommit?.();
     const mismatch = fingerprintMismatch(relPath, expectedLocal, root);
     if (mismatch !== null) throw new TargetChangedError(relPath, mismatch);
+    // Checked right before the writes: no ancestor may be a symlink out of the root.
+    assertWritableInsideRoot(root, relPath);
     mkdirSync(path.dirname(finalPath), { recursive: true });
+    assertWritableInsideRoot(root, relPath);
     let recycledPrevious = false;
     if (expectedLocal !== undefined) {
       recycle.recycle(relPath, `replaced by remote revision ${node.revisionUid ?? 'unknown'}`);
@@ -113,7 +119,7 @@ export async function atomicDownload(
   } catch (error) {
     // Our own temp file only; the target is untouched.
     await unlink(tempPath).catch(() => undefined);
-    if (error instanceof RemoteError || error instanceof TargetChangedError) throw error;
+    if (error instanceof RemoteError || error instanceof TargetChangedError || error instanceof UnsafePathError) throw error;
     if (isDiskFull(error)) throw new DiskFullError(error instanceof Error ? error.message : String(error));
     throw error;
   }

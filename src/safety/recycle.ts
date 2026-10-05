@@ -11,6 +11,7 @@ import path from 'node:path';
 
 import type { AuditLog } from '../audit/logger.js';
 import { INTERNAL_DIR_NAME } from '../config/paths.js';
+import { assertWritableInsideRoot } from './pathGuard.js';
 
 export interface RecycledItem {
   /** Timestamp bucket (ms since epoch) the item was recycled in. */
@@ -44,6 +45,9 @@ export class RecycleBin {
   recycle(relPath: string, reason: string): RecycledItem {
     if (relPath === '' || relPath.startsWith('..') || path.isAbsolute(relPath)) throw new Error(`Refusing to recycle invalid path ${relPath}`);
     if (relPath === INTERNAL_DIR_NAME || relPath.startsWith(`${INTERNAL_DIR_NAME}/`)) throw new Error(`Refusing to recycle the internal directory ${relPath}`);
+    // Neither the item's folders nor the bin's own may lead out of the root through a symlink.
+    assertWritableInsideRoot(this.root, relPath);
+    assertWritableInsideRoot(this.root, `${INTERNAL_DIR_NAME}/recycle/0/${relPath}`);
     const source = path.join(this.root, relPath);
     const st = statSync(source);
     const bucket = this.now();

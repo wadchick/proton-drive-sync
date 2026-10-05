@@ -23,6 +23,7 @@ import path from 'node:path';
 import type { AuditLog } from '../audit/logger.js';
 import type { Conflict, LocalFingerprint, Operation, RemoteFingerprint } from '../reconcile/types.js';
 import type { RemoteDrive, RemoteNode } from '../remote/interface.js';
+import { assertWritableInsideRoot } from '../safety/pathGuard.js';
 import type { BaselineRepo } from '../state/baseline.ts';
 import type { JournalRepo } from '../state/journal.ts';
 import type { ConflictEntry, ConflictRepo } from '../state/misc.ts';
@@ -128,6 +129,8 @@ export class ConflictHandler {
       // Journal the local rename (with the conflict kind) so recovery can finish it after a crash.
       const entry = this.ctx.journal.plan({ op: 'conflict_rename_local', relPath: copyPath, previousRelPath: c.relPath, nodeUid: c.remoteUid ?? null, intended: { kind: 'conflict_rename_local', from: c.relPath, to: copyPath, conflictKind: c.kind }, preState: { local } });
       this.ctx.journal.start(entry.id);
+      assertWritableInsideRoot(this.ctx.root, c.relPath);
+      assertWritableInsideRoot(this.ctx.root, copyPath);
       renameSync(path.join(this.ctx.root, c.relPath), path.join(this.ctx.root, copyPath));
       // One transaction: the original path's row goes, the conflict enters the inbox and the journal
       // completes together, so a crash cannot leave a renamed file with no conflict to resolve.
