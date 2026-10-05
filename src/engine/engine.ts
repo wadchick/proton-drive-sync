@@ -199,9 +199,15 @@ export class SyncEngine extends EventEmitter {
       return;
     }
     if (this.status.state !== 'starting' && this.status.state !== 'needs_login') return;
-    this.setState('scanning', 'recovering journal');
-    const report = await recoverJournal(this.ctx());
-    this.deps.audit.append({ kind: 'recovery', message: `journal recovery: ${String(report.completed)} completed, ${String(report.failed)} failed, ${String(report.abandoned)} abandoned`, details: { ...report } });
+    if (this.deps.config.dryRun) {
+      // Recovery updates the baseline, quarantine and temp files from a previous run's journal;
+      // a preview leaves that to the next real run.
+      this.deps.audit.append({ kind: 'recovery', message: 'dry run: journal recovery deferred to the next real run', outcome: 'skipped' });
+    } else {
+      this.setState('scanning', 'recovering journal');
+      const report = await recoverJournal(this.ctx());
+      this.deps.audit.append({ kind: 'recovery', message: `journal recovery: ${String(report.completed)} completed, ${String(report.failed)} failed, ${String(report.abandoned)} abandoned`, details: { ...report } });
+    }
 
     this.deps.watcher.requestFullScan('startup');
     await this.deps.watcher.start();
@@ -415,6 +421,14 @@ export class SyncEngine extends EventEmitter {
     for (const b of plan.blocked) this.deps.audit.append({ kind: 'safety', op: 'blocked', message: `${b.reason}: ${b.detail}`, ...(b.relPath !== undefined ? { path: b.relPath } : {}), ...(b.remoteUid !== undefined ? { nodeUid: b.remoteUid } : {}), outcome: 'skipped' });
 
     // Conflicts first (they only rename locally and detach baseline rows).
+    if (plan.conflicts.length > 0 && this.deps.config.dryRun) {
+      // Handling a conflict renames the local file and records state before the executor (which is
+      // where dry run is otherwise enforced) is reached. A preview only reports what it would do.
+      for (const c of plan.conflicts) {
+        this.deps.audit.append({ kind: 'conflict', op: c.kind, message: `dry run: would handle a ${c.kind} conflict on ${c.relPath}`, path: c.relPath, ...(c.remoteUid !== undefined ? { nodeUid: c.remoteUid } : {}), outcome: 'skipped' });
+      }
+      return this.gateAndExecute(plan);
+    }
     if (plan.conflicts.length > 0) {
       await this.deps.conflicts.handleNew(plan.conflicts);
       // Re-plan so the renamed copies are included in this cycle.
@@ -588,6 +602,9 @@ export class SyncEngine extends EventEmitter {
   }
 
   async resolveConflict(id: number, choice: Resolution): Promise<void> {
+    // Resolving rewrites baseline rows and closes the conflict directly; only its file operations
+    // go through the (dry-run) executor, so in a preview it would record changes that never happen.
+    if (this.deps.config.dryRun) throw new Error('Dry run: conflicts are not resolved; turn dry run off to resolve them');
     const ops = await this.deps.conflicts.resolve(id, choice);
     if (ops.length > 0) await this.executePlan({ ...emptyPlan(), operations: ops });
     this.trigger('conflict resolved');
