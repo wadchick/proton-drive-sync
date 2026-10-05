@@ -81,6 +81,38 @@ describe('RecycleBin', () => {
   });
 });
 
+describe('RecycleBin.recycle never moves an item out of the root', () => {
+  const T = 1_700_000_000_000;
+  function outside(): string {
+    const o = path.join(dir, 'outside');
+    mkdirSync(o, { recursive: true });
+    return o;
+  }
+
+  it('refuses when the timestamp bucket itself is a symlink', () => {
+    const o = outside();
+    mkdirSync(path.join(root, '.proton-sync', 'recycle'), { recursive: true });
+    symlinkSync(o, path.join(root, '.proton-sync', 'recycle', String(T)));
+    writeFileSync(path.join(root, 'a.txt'), 'A');
+    const bin = new RecycleBin(root, 30, audit, () => T);
+    expect(() => bin.recycle('a.txt', 'r')).toThrow(/symlink/i);
+    expect(readdirSync(o)).toEqual([]);
+    expect(readFileSync(path.join(root, 'a.txt'), 'utf8')).toBe('A');
+  });
+
+  it('refuses when a folder inside the bucket is a symlink', () => {
+    const o = outside();
+    mkdirSync(path.join(root, '.proton-sync', 'recycle', String(T)), { recursive: true });
+    symlinkSync(o, path.join(root, '.proton-sync', 'recycle', String(T), 'docs'));
+    mkdirSync(path.join(root, 'docs'));
+    writeFileSync(path.join(root, 'docs', 'a.txt'), 'A');
+    const bin = new RecycleBin(root, 30, audit, () => T);
+    expect(() => bin.recycle('docs/a.txt', 'r')).toThrow(/symlink/i);
+    expect(readdirSync(o)).toEqual([]);
+    expect(readFileSync(path.join(root, 'docs', 'a.txt'), 'utf8')).toBe('A');
+  });
+});
+
 describe('RecycleBin purge never follows a symlink out of the root', () => {
   it('refuses when the internal or recycle folder is a symlink, and skips symlinked buckets', () => {
     // An unrelated folder whose entries happen to have old-timestamp names.
