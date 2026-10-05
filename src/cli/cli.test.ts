@@ -7,6 +7,7 @@ import { AuditLog } from '../audit/logger.js';
 import { SecretRegistry } from '../audit/redact.js';
 import { loadConfigFile } from '../config/configFile.js';
 import { resolveAppPaths } from '../config/paths.js';
+import { ControlServer, type ControlTarget } from '../engine/control.js';
 import { LoginError } from '../remote/proton/auth.js';
 import { FakeRemote } from '../testing/fakeRemote.js';
 import { CliError, dispatch, doctorReport, type CommandDeps, type CommandRuntime } from './commands.js';
@@ -125,6 +126,48 @@ describe('CLI', () => {
     deps.prompt = (q) => Promise.resolve(q.startsWith('Password') ? '  pass word  ' : q.startsWith('Two') ? ' 123456 ' : 'user@example.test');
     expect(await dispatch(deps, parseCli(['login', '--password']))).toBe(0);
     expect(seen).toEqual(['  pass word  ', '123456']);
+  });
+
+  it('login and logout tell a running engine to reload its session', async () => {
+    deps = makeDeps();
+    let reloads = 0;
+    const server = new ControlServer(deps.ctx.paths.controlSocket, {
+      getStatus: () => ({ state: 'idle' }),
+      onStatus: () => () => undefined,
+      reloadSession: () => {
+        reloads++;
+        return Promise.resolve();
+      },
+    } as unknown as ControlTarget);
+    await server.listen();
+    try {
+      expect(await cli('login')).toBe(0);
+      expect(reloads).toBe(1);
+      expect(await cli('logout')).toBe(0);
+      expect(reloads).toBe(2);
+    } finally {
+      await server.close();
+    }
+    // With no engine running, login still succeeds.
+    expect(await cli('login')).toBe(0);
+  });
+
+  it('login does not hang on an engine that accepts the connection but never answers', async () => {
+    deps = makeDeps();
+    const server = new ControlServer(deps.ctx.paths.controlSocket, {
+      getStatus: () => ({ state: 'idle' }),
+      onStatus: () => () => undefined,
+      reloadSession: () => new Promise<void>(() => undefined),
+    } as unknown as ControlTarget);
+    await server.listen();
+    try {
+      const started = Date.now();
+      expect(await cli('login')).toBe(0);
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(loggedIn).toBe(true);
+    } finally {
+      await server.close();
+    }
   });
 
   it('setup requires login, validates arguments, and records the pair', async () => {

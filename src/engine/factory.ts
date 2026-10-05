@@ -179,6 +179,7 @@ export async function createEngine(options: EngineFactoryOptions): Promise<Engin
     listQuarantine: () => quarantine.open(),
     releaseQuarantine: (id) => { e.releaseQuarantine(id); },
     listRecycle: () => recycle.list(),
+    reloadSession: () => e.reloadSession(),
     quit: async () => {
       await e.stop();
     },
