@@ -322,6 +322,35 @@ describe('a resolution closes the conflict only once it has been applied', () =>
     sameOnBothSides();
   });
 
+  it('a failed divergent-move keep_local is not undone by the next sync, and a retry applies it', async () => {
+    h.write('a.txt', 'A');
+    await h.settle();
+    renameSync(path.join(h.root, 'a.txt'), path.join(h.root, 'local.txt'));
+    await h.fake.rename(h.remotePathToUid('a.txt') ?? '', 'remote.txt');
+    const [entry] = await handler.handleNew((await h.plan()).conflicts);
+    if (entry === undefined) throw new Error('no entry');
+    expect(entry.kind).toBe('divergent_move');
+
+    // The remote rename fails on every attempt (maxRetries is 2).
+    for (let i = 0; i < 3; i++) h.fake.injectFault('rename', { kind: 'connection' });
+    await expect(handler.resolve(entry.id, 'keep_local', run)).rejects.toThrow(/stays open/);
+    expect(isOpen(entry.id)).toBe(true);
+
+    // An ordinary sync before the retry must not move the local file to the remote name.
+    const next = await h.plan();
+    expect(next.operations).toEqual([]);
+    expect(next.conflicts.map((c) => c.kind)).toEqual(['divergent_move']);
+    await h.execute(next);
+    expect([...h.localFiles().keys()]).toEqual(['local.txt']);
+
+    await handler.resolve(entry.id, 'keep_local', run);
+    await settleWithConflicts();
+    expect(isOpen(entry.id)).toBe(false);
+    expect([...h.localFiles().keys()]).toEqual(['local.txt']);
+    expect([...h.remoteFiles().keys()]).toEqual(['local.txt']);
+    h.assertBaselineConsistent();
+  });
+
   it('an operation that does not complete leaves the entry open to try again', async () => {
     const { id, copy } = await freshCreateCreate();
     await settleWithConflicts();

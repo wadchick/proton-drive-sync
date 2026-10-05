@@ -243,15 +243,18 @@ export class ConflictHandler {
     } else if (entry.kind === 'divergent_move') {
       const localPath = (entry.local as { path?: string }).path;
       const remotePath = (entry.remote as { path?: string }).path;
+      // The baseline row stays at the original path until the move succeeds (`baselineFrom`): a
+      // move that fails leaves the conflict as it was, instead of a baseline that makes the next
+      // sync undo the user's choice.
       if (choice === 'keep_local' && localPath !== undefined && remotePath !== undefined && entry.nodeUid !== null) {
         const node = await this.ctx.remote.getNode(entry.nodeUid);
-        if (node !== null) ops.push({ id: this.opId(), kind: 'move_remote', remoteUid: node.uid, from: remotePath, to: localPath, expectedRemote: remoteFp(node), evidence: ['user chose the local destination'] });
-        this.ctx.baseline.rename(entry.relPath, localPath);
+        if (node === null || node.isTrashed) throw new ResolutionError(`the item at ${remotePath} is no longer on Proton`);
+        ops.push({ id: this.opId(), kind: 'move_remote', remoteUid: node.uid, from: remotePath, to: localPath, expectedRemote: remoteFp(node), baselineFrom: entry.relPath, evidence: ['user chose the local destination'] });
       }
       if (choice === 'keep_remote' && localPath !== undefined && remotePath !== undefined && entry.nodeUid !== null) {
         const local = localFp(this.ctx.root, localPath);
-        if (local !== undefined) ops.push({ id: this.opId(), kind: 'move_local', from: localPath, to: remotePath, remoteUid: entry.nodeUid, expectedLocal: local, evidence: ['user chose the remote destination'] });
-        this.ctx.baseline.rename(entry.relPath, remotePath);
+        if (local === undefined) throw new ResolutionError(`the local item ${localPath} is no longer there`);
+        ops.push({ id: this.opId(), kind: 'move_local', from: localPath, to: remotePath, remoteUid: entry.nodeUid, expectedLocal: local, baselineFrom: entry.relPath, evidence: ['user chose the remote destination'] });
       }
       if (choice === 'keep_both') {
         // Detach: both destinations become new items and are created on the other side.
