@@ -419,8 +419,17 @@ export class SyncEngine extends EventEmitter {
     };
     for (const b of plan.blocked) this.deps.audit.append({ kind: 'safety', op: 'blocked', message: `${b.reason}: ${b.detail}`, ...(b.relPath !== undefined ? { path: b.relPath } : {}), ...(b.remoteUid !== undefined ? { nodeUid: b.remoteUid } : {}), outcome: 'skipped' });
 
-    // Conflicts first (they only rename locally and detach baseline rows), but only in the
-    // configured root: the root must pass preflight before even a rename.
+    // Conflicts first (they only rename locally and detach baseline rows).
+    if (plan.conflicts.length > 0 && this.deps.config.dryRun) {
+      // Handling a conflict renames the local file and records state before the executor (which is
+      // where dry run is otherwise enforced) is reached. A preview only reports what it would do.
+      for (const c of plan.conflicts) {
+        this.deps.audit.append({ kind: 'conflict', op: c.kind, message: `dry run: would handle a ${c.kind} conflict on ${c.relPath}`, path: c.relPath, ...(c.remoteUid !== undefined ? { nodeUid: c.remoteUid } : {}), outcome: 'skipped' });
+      }
+      return this.gateAndExecute(plan);
+    }
+    // Real conflict handling happens only in the configured root: the root must pass preflight
+    // before even a rename.
     if (plan.conflicts.length > 0) {
       const failure = await this.preflightFailure(plannedDownloadBytes(plan, this.deps.mirror.view()));
       if (failure !== null) return { plan, summary: null, held: false, skipped: `preflight: ${failure}` };
@@ -485,6 +494,13 @@ export class SyncEngine extends EventEmitter {
 
   /** Journal recovery redoes or rolls back file changes, so it too needs a passing preflight. */
   private async recoverJournalIfSafe(): Promise<'recovered' | 'blocked'> {
+    if (this.deps.config.dryRun) {
+      // Recovery updates the baseline, quarantine and temp files from a previous run's journal;
+      // a preview leaves that to the next real run.
+      this.deps.audit.append({ kind: 'recovery', message: 'dry run: journal recovery deferred to the next real run', outcome: 'skipped' });
+      this.journalRecovered = true;
+      return 'recovered';
+    }
     try {
       if ((await this.preflightFailure(0)) !== null) return 'blocked';
     } catch (error) {
@@ -633,6 +649,9 @@ export class SyncEngine extends EventEmitter {
   }
 
   async resolveConflict(id: number, choice: Resolution): Promise<void> {
+    // Resolving rewrites baseline rows and closes the conflict directly; only its file operations
+    // go through the (dry-run) executor, so in a preview it would record changes that never happen.
+    if (this.deps.config.dryRun) throw new Error('Dry run: conflicts are not resolved; turn dry run off to resolve them');
     // Resolving changes the baseline and plans moves, recycles and trashes: refuse it for the wrong root.
     const failure = await this.preflightFailure(0);
     if (failure !== null) throw new Error(`cannot resolve conflict ${String(id)}: ${failure}`);
