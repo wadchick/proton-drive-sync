@@ -180,17 +180,20 @@ describe('CLI', () => {
     const flagDeps = makeDeps();
     const stop2 = stopRun;
     const running2 = dispatch(flagDeps, parseCli(['run', '--dry-run', '--paused', '--no-tray']));
+    // Wait for startup to finish, not just for the socket to answer: the engine reports
+    // 'scanning' while it recovers and lists both sides, and only then 'paused'.
+    let s = { state: '', dryRun: false };
     for (let i = 0; i < 100; i++) {
       await new Promise((r) => setTimeout(r, 30));
       stdout = [];
-      if ((await cli('status', '--json')) === 0) break;
+      if ((await cli('status', '--json')) === 0) {
+        s = JSON.parse(stdout.at(-1) ?? '{}') as { state: string; dryRun: boolean };
+        if (s.state === 'paused') break;
+      }
     }
     const cfg = loadConfigFile(flagDeps.ctx.paths.configFile);
     expect(cfg?.dryRun).toBe(false);
     expect(cfg?.startPaused).toBe(false);
-    stdout = [];
-    expect(await cli('status', '--json')).toBe(0);
-    const s = JSON.parse(stdout.at(-1) ?? '{}') as { state: string; dryRun: boolean };
     expect(s.state).toBe('paused');
     expect(s.dryRun).toBe(true);
     stop2?.();

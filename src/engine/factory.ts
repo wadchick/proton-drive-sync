@@ -3,6 +3,9 @@
  * together. Used by the CLI (with the Proton runtime) and by tests (with the
  * fake remote).
  */
+import { mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type { AuditLog } from '../audit/logger.js';
@@ -26,6 +29,7 @@ import { ConflictRepo, CursorRepo, QuarantineRepo, ScanRepo } from '../state/mis
 import { StateStore } from '../state/store.ts';
 import type { ControlTarget } from './control.js';
 import { SyncEngine } from './engine.js';
+import { bindStateToPair, pairChange } from './pairState.js';
 import { RemoteMirror } from './remoteMirror.js';
 
 export interface EngineFactoryOptions {
@@ -68,26 +72,25 @@ export async function createEngine(options: EngineFactoryOptions): Promise<Engin
   const log = (c: string): Logger => createLogger(c, options.logSink, options.logLevel);
   const now = options.now ?? Date.now;
 
-  const store = StateStore.open(paths.stateDb, { now });
-  const baseline = new BaselineRepo(store);
+  let store = StateStore.open(paths.stateDb, { now });
+  /** A dry run's throwaway state folder, removed on dispose. */
+  let scratchDir: string | null = null;
 
-  // Pair change: if the stored baseline was built against a different remote root, the old
-  // baseline must not be applied to the new folder (it would look like a mass delete). Archive
-  // it (recoverable in `meta`) and reset so the next run is a clean first sync — no deletes.
-  // This is the archive-on-next-start that setup.ts promises.
-  const BASELINE_ROOT_KEY = 'baseline_remote_root';
-  const priorRemoteRoot = store.getMeta(BASELINE_ROOT_KEY);
-  if (priorRemoteRoot === null) {
-    store.setMeta(BASELINE_ROOT_KEY, remoteRootUid);
-  } else if (priorRemoteRoot !== remoteRootUid) {
-    const archived = baseline.all();
-    if (archived.length > 0) {
-      store.setMeta(`archived_baseline:${priorRemoteRoot}:${String(now())}`, JSON.stringify(archived));
-      audit.append({ kind: 'engine', op: 'setup', message: `sync pair changed (remote root ${priorRemoteRoot} -> ${remoteRootUid}): archived ${String(archived.length)} baseline row(s) and reset for a first sync`, outcome: 'ok' });
-    }
-    baseline.clear();
-    store.setMeta(BASELINE_ROOT_KEY, remoteRootUid);
+  // The stored state belongs to one pair of folders, remote and local. If either changed,
+  // archive it and reset so the next run is a clean first sync (see pairState.ts).
+  const pair = { remoteRootUid, localRoot: rootIdentity };
+  if (!config.dryRun) {
+    bindStateToPair(store, pair, audit, now);
+  } else if (pairChange(store, pair) !== null) {
+    // A dry run changes no stored state, not even to reset it. It previews the first sync a
+    // real run would do, from an empty history in a throwaway store.
+    store.close();
+    scratchDir = mkdtempSync(path.join(os.tmpdir(), 'proton-drive-sync-dry-run-'));
+    store = StateStore.open(path.join(scratchDir, 'state.db'), { now });
+    bindStateToPair(store, pair, audit, now);
+    audit.append({ kind: 'engine', op: 'setup', message: 'dry run: the sync pair changed; previewing a first sync without resetting the stored sync history', outcome: 'skipped' });
   }
+  const baseline = new BaselineRepo(store);
   const journal = new JournalRepo(store);
   const conflictRepo = new ConflictRepo(store);
   const cursors = new CursorRepo(store);
@@ -193,6 +196,7 @@ export async function createEngine(options: EngineFactoryOptions): Promise<Engin
     dispose: async () => {
       await e.stop();
       store.close();
+      if (scratchDir !== null) rmSync(scratchDir, { recursive: true, force: true });
     },
   };
 }
