@@ -47,17 +47,20 @@ export class RecycleBin {
   recycle(relPath: string, reason: string): RecycledItem {
     if (relPath === '' || relPath.startsWith('..') || path.isAbsolute(relPath)) throw new Error(`Refusing to recycle invalid path ${relPath}`);
     if (relPath === INTERNAL_DIR_NAME || relPath.startsWith(`${INTERNAL_DIR_NAME}/`)) throw new Error(`Refusing to recycle the internal directory ${relPath}`);
-    // Neither the item's folders nor the bin's own may lead out of the root through a symlink.
+    // Neither the item's folders nor the bin's own may lead out of the root through a symlink:
+    // the actual destination is checked, bucket included, before and after creating its folders.
     assertWritableInsideRoot(this.root, relPath);
-    assertWritableInsideRoot(this.root, `${INTERNAL_DIR_NAME}/recycle/0/${relPath}`);
     const source = path.join(this.root, relPath);
     const st = statSync(source);
     const bucket = this.now();
+    const destinationRel = `${INTERNAL_DIR_NAME}/recycle/${String(bucket)}/${relPath}`;
+    assertWritableInsideRoot(this.root, destinationRel);
     let destination = this.destinationFor(relPath, bucket);
     mkdirSync(path.dirname(destination), { recursive: true });
+    assertWritableInsideRoot(this.root, destinationRel);
     for (let i = 1; ; i++) {
       try {
-        statSync(destination);
+        lstatSync(destination);
         destination = `${this.destinationFor(relPath, bucket)}.${String(i)}`;
       } catch {
         break;
