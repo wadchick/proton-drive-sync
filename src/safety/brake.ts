@@ -107,6 +107,11 @@ export class PlanGate {
     return plan;
   }
 
+  /** Hold again a plan taken by confirm() that could not run, unless a newer plan is held by now. */
+  restore(held: HeldPlan): void {
+    this.held ??= held;
+  }
+
   /** User rejected: nothing runs; affected items are returned for manual review. */
   reject(id: string): Operation[] {
     const held = this.take(id);
