@@ -10,7 +10,7 @@ export interface DetailData {
   status: EngineStatus;
   conflicts: { id: number; relPath: string; kind: string; local: unknown; remote: unknown }[];
   quarantine: { id: number; relPath: string | null; nodeUid: string | null; reason: string }[];
-  recycle: { bucket: number; relPath: string }[];
+  recycle: { bucket: number; relPath: string; size?: number }[];
   /** The configured sync pair, when the server knows it. */
   roots?: { local: string; remote: string } | null;
   /** The system's date locale (BCP 47); absent or null uses the browser's. */
@@ -87,14 +87,10 @@ export function applySnapshot(doc: Document, data: DetailData): void {
     if (existing === null) {
       el.innerHTML =
         '<div class="section-head"><h2>' + esc(title) + ' <span data-count></span></h2></div>' +
-        // Body: what the section holds, then filter and paging with the range under them, then the list.
+        // Body: what the section holds, the filter, the list, then the range and paging.
         '<div class="section-body"><p class="intro" data-intro></p>' +
-        '<div class="toolbar" data-toolbar>' +
-        '<input data-filter type="search" aria-label="' + esc(title) + ' filter">' +
-        '<button type="button" class="btn" data-prev>Previous</button>' +
-        '<button type="button" class="btn" data-next>Next</button></div>' +
-        '<p data-pager class="pager"></p>' +
-        '<div class="scroll" data-rows></div></div>';
+        '<div class="toolbar" data-toolbar>' + search(title + ' filter') + '</div>' +
+        '<div class="scroll" data-rows></div>' + footer() + '</div>';
       const created = el.querySelector('[data-filter]');
       const goPrev = el.querySelector('[data-prev]');
       const goNext = el.querySelector('[data-next]');
@@ -118,6 +114,8 @@ export function applySnapshot(doc: Document, data: DetailData): void {
     const empty = meta.total === 0;
     const toolbar = el.querySelector('[data-toolbar]');
     if (toolbar instanceof HTMLElement) toolbar.hidden = empty;
+    const foot = el.querySelector('[data-footer]');
+    if (foot instanceof HTMLElement) foot.hidden = empty;
     if (prev instanceof HTMLButtonElement) prev.disabled = empty || meta.page <= 1;
     if (next instanceof HTMLButtonElement) next.disabled = empty || meta.page >= meta.pages;
     const input = el.querySelector('[data-filter]');
@@ -128,18 +126,52 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   };
   // An empty section shows nothing; only a filter that hides every item says so.
   const emptyBody = (meta: PageWindow<unknown>): string => (meta.total === 0 ? '' : '<p class="empty">nothing matches</p>');
-  const side = (value: unknown): string => {
-    const json = '<details><summary>JSON</summary><pre>' + esc(JSON.stringify(value, null, 2)) + '</pre></details>';
-    if (typeof value !== 'object' || value === null) return esc(JSON.stringify(value)) + json;
-    const record = value as Record<string, unknown>;
-    const bits: string[] = [];
-    if (typeof record['name'] === 'string') bits.push(record['name']);
-    if (typeof record['size'] === 'number') bits.push(String(record['size']) + ' B');
-    const mtime = record['mtimeMs'] ?? record['mtime'];
-    if (typeof mtime === 'number') bits.push(when(mtime));
-    if (typeof record['sha1'] === 'string' && record['sha1'] !== '') bits.push(record['sha1'].slice(0, 8));
-    return esc(bits.length > 0 ? bits.join(' · ') : 'record') + json;
+  // A path cell takes the room the other columns leave and truncates at the start, so the
+  // file name stays visible; the full path is in the tooltip.
+  // An optional second line goes under the path in the smaller, dimmed style; the tooltip
+  // can carry a fuller path than the one shown.
+  const pathCell = (path: string, sub = '', full = path): string => '<td class="fill"><div class="trunc-start" title="' + esc(full) + '"><bdi>' + esc(path) + '</bdi></div>' + sub + '</td>';
+  const bytes = (n: number): string => {
+    if (n < 1024) return num(n) + ' B';
+    const kb = n / 1024;
+    return kb < 1024 ? kb.toLocaleString(locale, { maximumFractionDigits: 1 }) + ' KB' : (kb / 1024).toLocaleString(locale, { maximumFractionDigits: 1 }) + ' MB';
   };
+  // One side of a conflict: a readable size (and modified time when known), with the
+  // details on hover. The local side keeps its file details under `fingerprint`.
+  const side = (value: unknown): string => {
+    if (typeof value !== 'object' || value === null) return '--';
+    const record = value as Record<string, unknown>;
+    if (record['deleted'] === true) return 'Deleted';
+    if (record['deleted'] === false) return 'Kept';
+    const fingerprint = record['fingerprint'];
+    const fp = typeof fingerprint === 'object' && fingerprint !== null ? (fingerprint as Record<string, unknown>) : record;
+    const size = typeof fp['size'] === 'number' ? fp['size'] : null;
+    const mtime = fp['mtimeMs'] ?? fp['mtime'];
+    const modified = typeof mtime === 'number' ? when(mtime) : null;
+    const tip: string[] = [];
+    if (typeof record['path'] === 'string') tip.push('Local copy: ' + record['path']);
+    if (size !== null) tip.push('Size: ' + num(size) + ' bytes');
+    if (modified !== null) tip.push('Modified: ' + modified);
+    if (typeof record['sha1'] === 'string' && record['sha1'] !== '') tip.push('SHA-1: ' + record['sha1']);
+    return '<span title="' + esc(tip.join('\n')) + '">' + esc(size === null ? 'Details' : bytes(size)) + (modified === null ? '' : '<br><span class="sub">' + esc(modified) + '</span>') + '</span>';
+  };
+  // Resolve actions as icon buttons (inline SVG, so any font works), named in their tooltips.
+  const icon = (paths: string): string => '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
+  // Filter box: a magnifier inside it and the placeholder Omarchy's search fields use.
+  // The filter matches anywhere in the path shown in the Name column.
+  const search = (label: string): string =>
+    '<label class="search">' + icon('<circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/>') +
+    '<input data-filter type="search" placeholder="Search by name…" aria-label="' + esc(label) + '"></label>';
+  // Under a table: the item range on the left, Previous/Next as link text on the right.
+  const footer = (): string =>
+    '<div class="table-foot" data-footer><p data-pager class="pager"></p><span class="pages">' +
+    '<button type="button" class="link" data-prev>&lt; Previous</button>' +
+    '<button type="button" class="link" data-next>Next &gt;</button></span></div>';
+  const RESOLVE: [string, string, string][] = [
+    ['keep_local', 'Keep the local version', icon('<rect x="2" y="2.5" width="12" height="8.5" rx="1"/><path d="M1 13.5h14"/>')],
+    ['keep_remote', 'Keep the Proton version', icon('<path d="M3.85 13H12.25A2.8 2.8 0 0 0 12.4 7.4A4.2 4.2 0 1 0 4.03 7.91A2.55 2.55 0 1 0 3.85 13Z"/>')],
+    ['keep_both', 'Keep both versions', icon('<rect x="5.5" y="1.5" width="8" height="10" rx="1"/><path d="M3 4.5v9a1 1 0 0 0 1 1h6.5"/>')],
+  ];
 
   const view: DetailWindow = doc.defaultView ?? (globalThis as unknown as DetailWindow);
   view.detailNav = (id: string, dir: number): void => {
@@ -169,7 +201,7 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   // Pause stops all syncing in the engine (sync-now included), so the button is off while paused.
   if (syncButton instanceof HTMLButtonElement) {
     syncButton.disabled = s.state === 'paused';
-    syncButton.title = s.state === 'paused' ? 'Resume sync to sync now' : '';
+    syncButton.title = s.state === 'paused' ? 'Resume sync to sync now' : 'Sync now';
   }
   // The switch is on while syncing is allowed; flipping it pauses or resumes.
   const toggle = doc.getElementById('sync-toggle');
@@ -227,12 +259,10 @@ export function applySnapshot(doc: Document, data: DetailData): void {
       heldEl.hidden = false;
       if (heldEl.querySelector('[data-rows]') === null) {
         heldEl.innerHTML =
-          '<div class="warn"><div class="section-head"><h2>Held plan <span data-count></span></h2>' +
-          '<div class="toolbar"><input data-filter type="search" aria-label="Held plan filter">' +
-          '<button type="button" class="btn" data-prev>Previous</button>' +
-          '<button type="button" class="btn" data-next>Next</button></div></div>' +
-          '<p data-pager class="pager"></p>' +
-          '<p><strong>Confirmation required:</strong> <span data-reason></span></p><div class="scroll" data-rows></div>' +
+          '<div class="warn"><div class="section-head"><h2>Held plan <span data-count></span></h2></div>' +
+          '<p><strong>Confirmation required:</strong> <span data-reason></span></p>' +
+          '<div class="toolbar">' + search('Held plan filter') + '</div>' +
+          '<div class="scroll" data-rows></div>' + footer() +
           '<p class="actions"><button type="button" class="btn primary" data-confirm>Proceed</button><button type="button" class="btn" data-reject>Reject</button></p></div>';
         const heldFilter = heldEl.querySelector('[data-filter]');
         const heldGoPrev = heldEl.querySelector('[data-prev]');
@@ -274,44 +304,59 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   }
 
   const docs = windowOf('proton-documents', s.protonDocumentPaths, (path) => path);
-  // Proton documents live only on Proton, so their full path is under the Proton Drive folder.
+  // Proton documents live only on Proton; their full path is under the Proton Drive folder.
   const remoteRoot = data.roots ? data.roots.remote.replace(/\/+$/, '') + '/' : '';
   const docRows = docs.shown.map((path) => {
     const modified = (s.protonDocumentModifiedAt as Record<string, number> | undefined)?.[path];
-    return '<tr><td>' + (modified === undefined ? '--' : '<time datetime="' + esc(new Date(modified).toISOString()) + '">' + esc(when(modified)) + '</time>') + '</td><td>' + esc(remoteRoot + path) + '</td></tr>';
+    // Shown inside the sync folder like the other tables; the full Proton path is on hover.
+    return '<tr>' + pathCell(path, '', remoteRoot + path) + '<td class="nowrap">' + (modified === undefined ? '--' : '<time datetime="' + esc(new Date(modified).toISOString()) + '">' + esc(when(modified)) + '</time>') + '</td></tr>';
   }).join('');
-  paint('proton-documents', 'Skipped', docs.filtered === 0 ? emptyBody(docs) : '<table><tr><th>Modified</th><th>Path</th></tr>' + docRows + '</table>', docs,
+  paint('proton-documents', 'Skipped', docs.filtered === 0 ? emptyBody(docs) : '<table><tr><th>Name</th><th>Modified</th></tr>' + docRows + '</table>', docs,
     'Proton Docs and Sheets are skipped: they exist only on Proton and open in the browser, so there is no file to copy to this computer.');
 
   const transfers = windowOf('transfers', s.transfers, (row) => row.relPath);
   const transferRows = transfers.shown.map((row) => {
     const pct = row.total !== undefined && row.total > 0 ? Math.round((row.bytes / row.total) * 100) : 0;
-    return '<tr><td>' + (row.kind === 'upload' ? '↑ upload' : '↓ download') + '</td><td>' + esc(row.relPath) + '</td><td><div class="bar"><div style="width:' + String(pct) + '%"></div></div></td><td>' + String(Math.round(row.speed / 1024)) + ' KiB/s</td></tr>';
+    return '<tr>' + pathCell(row.relPath) + '<td class="nowrap">' + (row.kind === 'upload' ? '↑ upload' : '↓ download') + '</td><td><div class="bar"><div style="width:' + String(pct) + '%"></div></div></td><td class="nowrap">' + String(Math.round(row.speed / 1024)) + ' KiB/s</td></tr>';
   }).join('');
-  paint('transfers', 'Transfers', transfers.filtered === 0 ? emptyBody(transfers) : '<table><tr><th>Direction</th><th>Path</th><th>Progress</th><th>Speed</th></tr>' + transferRows + '</table>', transfers,
+  paint('transfers', 'Transfers', transfers.filtered === 0 ? emptyBody(transfers) : '<table><tr><th>Name</th><th>Direction</th><th>Progress</th><th>Speed</th></tr>' + transferRows + '</table>', transfers,
     'Uploads and downloads in progress.');
 
   const conflicts = windowOf('conflicts', data.conflicts, (row) => row.relPath);
+  // The engine's conflict kinds in plain words; the raw kind stays in the tooltip.
+  const deleted = (v: unknown): boolean => typeof v === 'object' && v !== null && (v as Record<string, unknown>)['deleted'] === true;
+  const happened = (row: DetailData['conflicts'][number]): string => {
+    if (row.kind === 'content') return 'Edited on both sides';
+    if (row.kind === 'divergent_move') return 'Moved to different places';
+    if (row.kind === 'create_create') return 'Created on both sides';
+    if (row.kind === 'delete_vs_edit') {
+      if (deleted(row.local)) return 'Deleted here, edited on Proton';
+      if (deleted(row.remote)) return 'Edited here, deleted on Proton';
+      return 'Deleted on one side, edited on the other';
+    }
+    return row.kind;
+  };
   const conflictRows = conflicts.shown.map((row) =>
-    '<tr><td>' + esc(row.relPath) + '</td><td>' + esc(row.kind) + '</td><td>' + side(row.local) + '</td><td>' + side(row.remote) + '</td><td>' +
-    '<button type="button" class="btn" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'keep_local'})\">Keep local</button>" +
-    '<button type="button" class="btn" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'keep_remote'})\">Keep remote</button>" +
-    '<button type="button" class="btn" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'keep_both'})\">Keep both</button></td></tr>").join('');
-  paint('conflicts', 'Conflicts', conflicts.filtered === 0 ? emptyBody(conflicts) : '<table><tr><th>Path</th><th>Kind</th><th>Local</th><th>Remote</th><th>Resolve</th></tr>' + conflictRows + '</table>', conflicts,
+    '<tr>' + pathCell(row.relPath, '<div class="sub" title="' + esc(row.kind) + '">' + esc(happened(row)) + '</div>') +
+    '<td class="nowrap">' + side(row.local) + '</td><td class="nowrap">' + side(row.remote) + '</td>' +
+    '<td class="nowrap actions-cell">' + RESOLVE.map(([choice, label, svg]) =>
+      '<button type="button" class="btn icon" title="' + label + '" aria-label="' + label + '" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'" + choice + "'})\">" + svg + '</button>').join('') +
+    '</td></tr>').join('');
+  paint('conflicts', 'Conflicts', conflicts.filtered === 0 ? emptyBody(conflicts) : '<table><tr><th>Name</th><th>Local</th><th>Remote</th><th>Resolve</th></tr>' + conflictRows + '</table>', conflicts,
     'Files changed on both sides since the last sync. Choose the version to keep, or keep both.');
 
   const quarantine = windowOf('quarantine', data.quarantine, (row) => row.relPath ?? '');
   const quarantineRows = quarantine.shown.map((row) =>
-    '<tr><td>' + esc(row.relPath ?? '-') + '</td><td>' + esc(row.nodeUid ?? '-') + '</td><td>' + esc(row.reason) + '</td><td><button type="button" class="btn" onclick="act(\'release\', {id:' + String(row.id) + '})">Release</button></td></tr>').join('');
-  paint('quarantine', 'Quarantine', quarantine.filtered === 0 ? emptyBody(quarantine) : '<table><tr><th>Path</th><th>Node</th><th>Reason</th><th></th></tr>' + quarantineRows + '</table>', quarantine,
+    '<tr>' + pathCell(row.relPath ?? '-') + '<td class="nowrap"><div class="trunc-end" title="' + esc(row.nodeUid ?? '-') + '">' + esc(row.nodeUid ?? '-') + '</div></td><td>' + esc(row.reason) + '</td><td class="nowrap"><button type="button" class="btn" onclick="act(\'release\', {id:' + String(row.id) + '})">Release</button></td></tr>').join('');
+  paint('quarantine', 'Quarantine', quarantine.filtered === 0 ? emptyBody(quarantine) : '<table><tr><th>Name</th><th>Node</th><th>Reason</th><th></th></tr>' + quarantineRows + '</table>', quarantine,
     'Files sync stopped touching because a transfer failed its integrity check or its result was unclear after a crash. Release one to let sync handle it again.');
 
   const recycle = windowOf('recycle', data.recycle, (row) => row.relPath);
   const recycleRows = recycle.shown.map((row) => {
     const iso = new Date(row.bucket).toISOString();
-    return '<tr><td><time datetime="' + esc(iso) + '">' + esc(when(row.bucket)) + '</time></td><td>' + esc(row.relPath) + '</td></tr>';
+    return '<tr>' + pathCell(row.relPath) + '<td class="nowrap">' + (row.size === undefined ? '--' : esc(bytes(row.size))) + '</td><td class="nowrap"><time datetime="' + esc(iso) + '">' + esc(when(row.bucket)) + '</time></td></tr>';
   }).join('');
-  paint('recycle', 'Recycled', recycle.filtered === 0 ? emptyBody(recycle) : '<table><tr><th>Recycled at</th><th>Path</th></tr>' + recycleRows + '</table>', recycle,
+  paint('recycle', 'Recycled', recycle.filtered === 0 ? emptyBody(recycle) : '<table><tr><th>Name</th><th>Size</th><th>Recycled at</th></tr>' + recycleRows + '</table>', recycle,
     'Local files moved aside instead of deleted or overwritten, kept in ' + (data.roots ? data.roots.local + '/.proton-sync/recycle' : 'the sync folder under .proton-sync/recycle') + '. Copy one back to restore it.');
 }
 

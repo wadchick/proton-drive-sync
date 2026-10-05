@@ -95,11 +95,28 @@ describe('applySnapshot', () => {
     expect(el('lines').textContent).not.toContain('2023-11-14T');
     expect(el('lines').textContent).not.toContain('synced');
     expect(el('conflicts').textContent).toContain(shown);
+    // Conflict kinds read as plain words under the path, with the raw kind on hover.
+    const kindCell = el('conflicts').querySelector('td.fill .sub');
+    expect(kindCell?.textContent).toBe('Edited on both sides');
+    expect(kindCell?.getAttribute('title')).toBe('content');
+    const kinds = (rows: DetailData['conflicts']): (string | null)[] => {
+      applySnapshot(document, { ...data, conflicts: rows });
+      return Array.from(el('conflicts').querySelectorAll('td.fill .sub')).map((sub) => sub.textContent);
+    };
+    expect(kinds([
+      { id: 2, relPath: 'a', kind: 'delete_vs_edit', local: { deleted: true }, remote: { deleted: false } },
+      { id: 3, relPath: 'b', kind: 'delete_vs_edit', local: { deleted: false }, remote: { deleted: true } },
+      { id: 4, relPath: 'c', kind: 'divergent_move', local: {}, remote: {} },
+      { id: 5, relPath: 'd', kind: 'create_create', local: {}, remote: {} },
+    ])).toEqual(['Deleted here, edited on Proton', 'Edited here, deleted on Proton', 'Moved to different places', 'Created on both sides']);
+    applySnapshot(document, data);
     // Proton documents show their full path under the Proton Drive folder.
     applySnapshot(document, { ...data, status: { ...status, protonDocumentPaths: ['Notes/Agenda', 'Undated'], protonDocumentModifiedAt: { 'Notes/Agenda': 1_700_000_000_000 } } });
     const docCells = Array.from(el('proton-documents').querySelectorAll('td')).map((td) => td.textContent);
-    expect(Array.from(el('proton-documents').querySelectorAll('th')).map((th) => th.textContent)).toEqual(['Modified', 'Path']);
-    expect(docCells).toEqual([shown, '/my-files/Sync/Notes/Agenda', '--', '/my-files/Sync/Undated']);
+    expect(Array.from(el('proton-documents').querySelectorAll('th')).map((th) => th.textContent)).toEqual(['Name', 'Modified']);
+    // Names read inside the sync folder like the other tables; the full Proton path is the tooltip.
+    expect(docCells).toEqual(['Notes/Agenda', shown, 'Undated', '--']);
+    expect(el('proton-documents').querySelector('.trunc-start')?.getAttribute('title')).toBe('/my-files/Sync/Notes/Agenda');
     applySnapshot(document, data);
     // Each section opens with a line saying what it holds; the recycle bin names its folder.
     expect(el('recycle').querySelector('[data-intro]')?.textContent).toBe('Local files moved aside instead of deleted or overwritten, kept in /home/u/Drive/.proton-sync/recycle. Copy one back to restore it.');
@@ -107,7 +124,20 @@ describe('applySnapshot', () => {
     expect(el('proton-documents').querySelector('[data-rows]')?.innerHTML).toBe('');
     expect(el('conflicts').innerHTML).toContain('c.txt');
     expect(el('conflicts').textContent).toContain('1 B');
-    expect(el('conflicts').textContent).toContain('"size": 1');
+    // Each side reads as a size with details on hover; the local side's details are nested
+    // under `fingerprint` with the path of the kept local copy.
+    expect(el('conflicts').querySelector('td:nth-child(2) span')?.getAttribute('title')).toContain('Size: 1 bytes');
+    applySnapshot(document, { ...data, conflicts: [{ id: 9, relPath: 'Notes/Long/Path/To/plan.md', kind: 'content', local: { path: 'Notes/Long/Path/To/plan.conflict-x.md', fingerprint: { size: 6443, mtimeMs: 1_700_000_000_000 } }, remote: { sha1: 'abcdef0123', size: 6475, mtimeMs: 1_700_000_000_000 } }] });
+    const cells = el('conflicts').querySelectorAll('td');
+    expect(cells[1]?.textContent).toBe('6.3 KB' + shown);
+    expect(cells[1]?.querySelector('span')?.getAttribute('title')).toBe('Local copy: Notes/Long/Path/To/plan.conflict-x.md\nSize: 6,443 bytes\nModified: ' + shown);
+    // The remote side shows its modified time too, once the engine adds it.
+    expect(cells[2]?.textContent).toBe('6.3 KB' + shown);
+    expect(cells[2]?.querySelector('span')?.getAttribute('title')).toContain('SHA-1: abcdef0123');
+    // The path truncates with the full path on hover; resolve actions are labelled icon buttons.
+    expect(cells[0]?.querySelector('.trunc-start')?.getAttribute('title')).toBe('Notes/Long/Path/To/plan.md');
+    expect(Array.from(cells[3]?.querySelectorAll('button') ?? []).map((b) => b.getAttribute('aria-label'))).toEqual(['Keep the local version', 'Keep the Proton version', 'Keep both versions']);
+    applySnapshot(document, data);
     expect(el('conflicts').innerHTML).toContain("choice:'keep_local'");
     expect(el('conflicts').innerHTML).toContain("choice:'keep_remote'");
     expect(el('conflicts').innerHTML).toContain("choice:'keep_both'");
@@ -115,6 +145,15 @@ describe('applySnapshot', () => {
     expect(recycled?.textContent).toBe(shown);
     expect(recycled?.getAttribute('datetime')).toBe('2023-11-14T22:13:20.000Z');
     expect(el('recycle').innerHTML).toContain('old.txt');
+    // Every table's path cell truncates at the start with the full path on hover.
+    expect(el('recycle').querySelector('td.fill .trunc-start')?.getAttribute('title')).toBe('old.txt');
+    // Recycled reads Name, Size, Recycled at; an unknown size shows as "--".
+    expect(Array.from(el('recycle').querySelectorAll('th')).map((th) => th.textContent)).toEqual(['Name', 'Size', 'Recycled at']);
+    expect(el('recycle').querySelectorAll('td')[1]?.textContent).toBe('--');
+    applySnapshot(document, { ...data, recycle: [{ bucket: 1_700_000_000_000, relPath: 'old.txt', size: 2_048 }] });
+    expect(el('recycle').querySelectorAll('td')[1]?.textContent).toBe('2 KB');
+    applySnapshot(document, data);
+    expect(el('conflicts').querySelector('td.fill .trunc-start')?.getAttribute('title')).toBe('c.txt');
     expect(el('quarantine').querySelector('[data-rows]')?.innerHTML).toBe('');
     expect(el('flags').textContent).toBe('');
   });
@@ -126,6 +165,7 @@ describe('applySnapshot', () => {
     expect(el('sync-toggle').getAttribute('onclick')).toBe("act('pause')");
     expect(el('act-sync').classList.contains('primary')).toBe(false);
     expect((el('act-sync') as HTMLButtonElement).disabled).toBe(false);
+    expect(el('act-sync').title).toBe('Sync now');
     applySnapshot(document, dataFor(statusWith({ state: 'paused', reason: 'paused by user' })));
     expect(el('sync-toggle').getAttribute('aria-checked')).toBe('false');
     expect(el('reason').textContent).toBe('');
@@ -148,6 +188,7 @@ describe('applySnapshot', () => {
     expect(el('transfers').querySelector('[data-rows]')?.innerHTML).toBe('');
     // An empty section hides (and disables) its filter and paging; the range sits on its own line.
     expect(control('transfers', '[data-toolbar]', HTMLElement).hidden).toBe(true);
+    expect(control('transfers', '[data-footer]', HTMLElement).hidden).toBe(true);
     expect(control('transfers', '[data-filter]', HTMLInputElement).disabled).toBe(true);
     expect(control('transfers', '[data-prev]', HTMLButtonElement).disabled).toBe(true);
     expect(control('transfers', '[data-next]', HTMLButtonElement).disabled).toBe(true);
@@ -169,7 +210,7 @@ describe('applySnapshot', () => {
     expect(el('proton-documents').textContent).toContain('Notes/Agenda');
     expect(el('proton-documents').textContent).toContain('Notes/Budget');
     // A table with a header, like the recycle bin.
-    expect(el('proton-documents').querySelector('th')?.textContent).toBe('Modified');
+    expect(el('proton-documents').querySelector('th')?.textContent).toBe('Name');
     const human = formatStatus(status).join('\n');
     expect(human).toContain('Proton documents: 2');
     expect(human).not.toContain('Notes/Agenda');
@@ -235,7 +276,15 @@ describe('applySnapshot', () => {
 
     const filter = control('proton-documents', '[data-filter]', HTMLInputElement);
     expect(filter.disabled).toBe(false);
+    // The filter box carries a magnifier and the "Search by name…" placeholder.
+    expect(filter.placeholder).toBe('Search by name…');
+    expect(filter.closest('label.search')?.querySelector('svg')).not.toBeNull();
     expect(control('proton-documents', '[data-toolbar]', HTMLElement).hidden).toBe(false);
+    // Under the table: the range on the left, link-style paging on the right.
+    expect(control('proton-documents', '[data-footer]', HTMLElement).hidden).toBe(false);
+    expect(control('proton-documents', '[data-footer] [data-pager]', HTMLElement).textContent).toBe('26–30 of 30');
+    expect(control('proton-documents', '[data-prev]', HTMLButtonElement).textContent).toBe('< Previous');
+    expect(control('proton-documents', '[data-next]', HTMLButtonElement).textContent).toBe('Next >');
     filter.value = 'agenda';
     filter.dispatchEvent(new Event('input'));
     expect(el('proton-documents').textContent).toContain('Notes/Agenda');

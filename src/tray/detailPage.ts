@@ -220,6 +220,10 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
+/** Two arrows chasing round a circle: the Sync now icon, drawn like the conflict resolve icons. */
+const SYNC_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M13.5 6.5A5.5 5.5 0 0 0 3.4 4.3"/><path d="M2.5 9.5a5.5 5.5 0 0 0 10.1 2.2"/><path d="M3 1.6v2.9h2.9"/><path d="M13 14.4v-2.9h-2.9"/></svg>';
+
 function renderPage(themeCss: string, icon: string): string {
   return `<!doctype html><html lang="en"${themeCss === '' ? '' : ' class="omarchy"'}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proton Drive Sync</title>
 <style>
@@ -357,9 +361,7 @@ main > section:not([hidden]) { margin-top: 1rem; padding-top: 1rem; border-top: 
 .status-row, .actions, .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .6rem; }
 .btn, .note, .toolbar input { border-radius: var(--radius-pill); }
 #glance { font-weight: 650; color: var(--accent); }
-#reason, .pager, .empty, .muted { color: var(--muted); }
-/* Column headers share the explanation lines' dimmed colour. */
-th { font-weight: 600; color: var(--stat-label); }
+#reason, .empty, .muted { color: var(--muted); }
 /* The progress/reason line and the flags take no room when they have nothing to say. */
 .status-row:has(#glance:empty):has(#reason:empty), #flags:empty { display: none; }
 #lines:not(:empty) { margin-top: .9rem; }
@@ -398,15 +400,48 @@ th { font-weight: 600; color: var(--stat-label); }
 /* A section's body: a line saying what it holds, then the controls on the right
    with the range under them, then the list. */
 .intro { margin: .7rem 0 0; font-size: .917em; color: var(--stat-label); }
-.section-body .toolbar { justify-content: flex-end; margin-top: .6rem; }
-.pager { margin: .7rem 0 0; text-align: right; white-space: nowrap; }
-.section-body .pager { margin-top: .5rem; }
+.section-body .toolbar, .warn .toolbar { justify-content: flex-start; margin-top: .6rem; }
+/* Under a table: the item range on the left, Previous/Next on the right as link text. */
+.table-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-top: .5rem; }
+.pager { margin: 0; white-space: nowrap; }
+/* The range reads like the table's column headers: same dimmed colour and weight. */
+.pager, th { font-weight: 600; color: var(--stat-label); }
+.pages { display: flex; gap: 1.25rem; white-space: nowrap; }
+.link { all: unset; cursor: pointer; color: var(--accent); }
+.link:hover:not(:disabled) { text-decoration: underline; }
+.link:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.link:disabled { color: var(--ctl-off-fg); cursor: default; }
 .toolbar { margin: 0; }
-.toolbar input { border-style: solid; border-width: var(--ctl-border-width); border-color: var(--input-border); padding: .4rem .9rem; min-width: 12rem; color: var(--fg); background: var(--ctl-bg); font: inherit; }
+.toolbar input { border-style: solid; border-width: var(--ctl-border-width); border-color: var(--input-border); padding: .4rem .9rem .4rem 2.1rem; min-width: 12rem; color: var(--fg); background: var(--ctl-bg); font: inherit; }
+/* The magnifier sits inside the filter box on the left; the placeholder is the foreground
+   at 58%, like the shell's search fields. */
+.search { position: relative; display: inline-flex; align-items: center; }
+.search svg { position: absolute; left: .7rem; width: 14px; height: 14px; color: var(--fg); opacity: .58; pointer-events: none; }
+.toolbar input::placeholder { color: var(--fg); opacity: .58; }
 .scroll { overflow-x: auto; }
 .scroll:not(:empty) { margin-top: .5rem; }
 table { border-collapse: collapse; width: 100%; }
 td, th { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+/* Table helpers: a cell that takes the leftover width (max-width: 0 lets it shrink), text
+   truncated at the start so a path keeps its file name, cells that never wrap, and a
+   smaller second line. */
+td.fill { width: 100%; max-width: 0; }
+.trunc-start { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.trunc-start bdi { direction: ltr; unicode-bidi: isolate; }
+/* Long IDs (Quarantine's node) cut at the end instead, at a fixed width. */
+.trunc-end { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nowrap { white-space: nowrap; }
+.sub { font-size: .85em; color: var(--stat-label); }
+/* Icon buttons follow the shell's plain Button (the Wi-Fi panel's QR code and speed test):
+   no fill or border at rest, the theme's hover/pressed states, an 18px icon (the shell's
+   subtitle size x 1.5). Padding is an even 5px so the hover box sits square around the icon.
+   The border keeps its width so nothing shifts. */
+.btn.icon { display: inline-flex; align-items: center; justify-content: center; padding: 5px; background: transparent; border-color: transparent; }
+.btn.icon svg { width: 18px; height: 18px; }
+.btn.icon:disabled { border-color: transparent; }
+/* Action buttons sit in the middle of their row rather than at the top. */
+td.actions-cell { vertical-align: middle; }
+.actions-cell .btn + .btn { margin-left: .35rem; }
 /* Outer cells sit flush so table text lines up with headings and inputs. */
 td:first-child, th:first-child { padding-left: 0; }
 td:last-child, th:last-child { padding-right: 0; }
@@ -425,10 +460,9 @@ pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-siz
 <main class="wrap">
 <p id="connection-lost" class="banner" role="alert" hidden>Lost connection to Proton Drive Sync, so the details below may be out of date. Reopen this page from the Proton Drive panel.</p>
 <header>
-<div class="title-row"><div class="title-block"><img class="title-icon" id="title-icon" src="icon/folder" alt="" data-icon="${encodeURIComponent(icon)}"${icon === '' ? ' hidden' : ''}><div class="title-text"><h1>Proton Drive Sync</h1><span class="state" id="state"></span></div></div><div class="title-side"><button type="button" role="switch" class="switch" id="sync-toggle" aria-checked="true" aria-label="Sync"><span class="knob"></span></button></div></div>
+<div class="title-row"><div class="title-block"><img class="title-icon" id="title-icon" src="icon/folder" alt="" data-icon="${encodeURIComponent(icon)}"${icon === '' ? ' hidden' : ''}><div class="title-text"><h1>Proton Drive Sync</h1><span class="state" id="state"></span></div></div><div class="title-side"><button type="button" class="btn icon" id="act-sync" onclick="act('sync')" title="Sync now" aria-label="Sync now">${SYNC_ICON}</button><button type="button" role="switch" class="switch" id="sync-toggle" aria-checked="true" aria-label="Sync"><span class="knob"></span></button></div></div>
 <p class="status-row"><span id="glance"></span><span id="reason"></span></p>
 <p id="flags"></p>
-<p class="actions"><button type="button" class="btn" id="act-sync" onclick="act('sync')">Sync now</button></p>
 <div id="lines"></div>
 </header>
 <p id="action-error" class="banner" hidden></p>

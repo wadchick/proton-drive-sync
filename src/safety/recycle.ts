@@ -18,6 +18,8 @@ export interface RecycledItem {
   relPath: string;
   absolutePath: string;
   kind: 'file' | 'dir';
+  /** Bytes on disk, for files; absent when the file could not be read. */
+  size?: number;
 }
 
 export class RecycleBin {
@@ -81,7 +83,14 @@ export class RecycleBin {
             out.push({ bucket: b, relPath: r, absolutePath: path.join(dir, entry.name), kind: 'dir' });
             walk(path.join(dir, entry.name), r);
           } else {
-            out.push({ bucket: b, relPath: r, absolutePath: path.join(dir, entry.name), kind: 'file' });
+            const absolutePath = path.join(dir, entry.name);
+            let size: number | undefined;
+            try {
+              size = statSync(absolutePath).size;
+            } catch {
+              // Gone or unreadable since the listing; leave the size out.
+            }
+            out.push({ bucket: b, relPath: r, absolutePath, kind: 'file', ...(size !== undefined ? { size } : {}) });
           }
         }
       };

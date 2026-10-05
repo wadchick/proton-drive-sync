@@ -171,7 +171,14 @@ export async function createEngine(options: EngineFactoryOptions): Promise<Engin
     syncNow: () => e.syncNow(),
     confirmHeldPlan: (id) => e.confirmHeldPlan(id),
     rejectHeldPlan: (id) => e.rejectHeldPlan(id),
-    listConflicts: () => conflictRepo.open(),
+    // The remote side of a conflict is stored without a time; add the remote file's current
+    // modified time, as `mtimeMs` like the local side's fingerprint.
+    listConflicts: () => conflictRepo.open().map((c) => {
+      const at = c.nodeUid === null ? null : mirror.modifiedAt(c.nodeUid);
+      const remote = c.remote;
+      if (at === null || typeof remote !== 'object' || remote === null || 'deleted' in remote) return c;
+      return { ...c, remote: { ...remote, mtimeMs: at } };
+    }),
     resolveConflict: (id, choice) => e.resolveConflict(id, choice),
     listQuarantine: () => quarantine.open(),
     releaseQuarantine: (id) => { e.releaseQuarantine(id); },

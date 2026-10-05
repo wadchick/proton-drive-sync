@@ -67,6 +67,16 @@ export class RemoteMirror {
     this.nodes.delete(uid);
   }
 
+  /**
+   * When a known, non-trashed item last changed (ms): the content's own time when the
+   * saving app recorded one, else Proton's. Null when the item is unknown or trashed.
+   */
+  modifiedAt(uid: string): number | null {
+    const node = this.nodes.get(uid);
+    if (node === undefined || node.isTrashed) return null;
+    return (node.claimedModifiedAt ?? node.serverModifiedAt).getTime();
+  }
+
   /** A poll of the event stream that started at `startedAt` completed successfully. */
   markPolled(startedAt: number): void {
     if (this.asOf === undefined || startedAt > this.asOf) this.asOf = startedAt;

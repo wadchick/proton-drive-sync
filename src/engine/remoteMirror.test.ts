@@ -20,6 +20,18 @@ function seedTree(): { fake: FakeRemote; root: string } {
   return { fake, root };
 }
 
+describe('RemoteMirror modifiedAt', () => {
+  it('reports when a known item last changed, and nothing for an unknown one', async () => {
+    const { fake, root } = seedTree();
+    const dated = fake.seedFile(root, 'dated.txt', 'D', { modifiedAt: new Date(1_700_000_000_000) });
+    const mirror = new RemoteMirror(fake, root, () => 1000);
+    await mirror.fullRefresh();
+    expect(mirror.modifiedAt(dated.uid)).toBe((dated.claimedModifiedAt ?? dated.serverModifiedAt).getTime());
+    expect(mirror.modifiedAt(dated.uid)).toBeGreaterThan(0);
+    expect(mirror.modifiedAt('no-such-uid')).toBeNull();
+  });
+});
+
 describe('RemoteMirror completeness', () => {
   it('a fresh mirror is incomplete until a full refresh succeeds', () => {
     const { fake, root } = seedTree();
