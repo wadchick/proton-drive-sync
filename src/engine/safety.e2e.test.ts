@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -76,6 +76,36 @@ describe('absence is not a delete', () => {
     await settle();
 
     expect(h.fake.trashedUids(), 'a symlink replacing a synced file must not trash the remote node').toEqual([]);
+  });
+
+  it('Symlinked folder: a remote file under a local symlink is never written through it', async () => {
+    // root/linked -> ../outside, and Proton has linked/secret.txt that was never synced.
+    const outside = path.join(h.root, '..', 'outside');
+    mkdirSync(outside);
+    symlinkSync(outside, path.join(h.root, 'linked'));
+    const folder = h.fake.seedFolder(h.remoteRootUid, 'linked');
+    h.fake.seedFile(folder.uid, 'secret.txt', 'REMOTE');
+    await h.start();
+    await settle();
+
+    expect(readdirSync(outside), 'nothing may be written outside the sync root').toEqual([]);
+    expect(lstatSync(path.join(h.root, 'linked')).isSymbolicLink(), 'the symlink itself is left alone').toBe(true);
+  });
+
+  it('Symlinked folder deeper in the tree: a nested link is not written through either', async () => {
+    const outside = path.join(h.root, '..', 'outside-nested');
+    mkdirSync(outside);
+    mkdirSync(path.join(h.root, 'docs'));
+    symlinkSync(outside, path.join(h.root, 'docs', 'linked'));
+    const docs = h.fake.seedFolder(h.remoteRootUid, 'docs');
+    const linked = h.fake.seedFolder(docs.uid, 'linked');
+    const deeper = h.fake.seedFolder(linked.uid, 'deeper');
+    h.fake.seedFile(linked.uid, 'a.txt', 'A');
+    h.fake.seedFile(deeper.uid, 'b.txt', 'B');
+    await h.start();
+    await settle();
+
+    expect(readdirSync(outside), 'nothing may be written outside the sync root').toEqual([]);
   });
 
   it('Incomplete or empty remote listing: a failed then empty listing trashes and recycles nothing', async () => {

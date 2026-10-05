@@ -144,6 +144,8 @@ export interface Conflict {
 
 export type BlockedReason =
   | 'case_collision'
+  /** The local destination is at or under a symlink or other path the scanner does not sync. */
+  | 'unsyncable_destination'
   | 'kind_mismatch'
   | 'target_occupied'
   | 'move_cycle'
