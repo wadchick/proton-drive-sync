@@ -66,4 +66,18 @@ describe('held plan id reuse', () => {
     await h.waitFor(['idle', 'attention']);
     expect(h.fake.trashedUids().length, 'only what the current plan confirms').toBe(4);
   });
+
+  it('a plan held because the remote root is empty lists the local files confirming would recycle', async () => {
+    h.write('a.txt', 'A');
+    h.write('b.txt', 'B');
+    await h.start();
+    await h.waitForConvergence();
+    await h.fake.trash([h.remotePathToUid('a.txt') ?? '', h.remotePathToUid('b.txt') ?? '']);
+    await h.restart();
+    const status = await h.waitFor(['awaiting_confirmation']);
+
+    expect(status.attention.heldPlan?.reason).toMatch(/remote root is empty/);
+    expect(status.attention.heldPlan?.affected.sort(), 'everything confirming would do is shown').toEqual(['recycle_local a.txt', 'recycle_local b.txt']);
+    expect(h.localFiles().size, 'nothing is recycled before the user confirms').toBe(2);
+  });
 });

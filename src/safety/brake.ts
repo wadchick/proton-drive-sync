@@ -45,6 +45,15 @@ export interface HeldPlan {
 }
 
 /**
+ * Everything confirming a held plan authorizes that the user must see: its destructive
+ * operations plus the withheld ones, which confirm also runs (an empty remote root, for
+ * instance, withholds every local recycle while the destructive list itself is empty).
+ */
+export function heldAffected(held: HeldPlan): Operation[] {
+  return [...held.verdict.affected, ...held.plan.withheld.map((w) => w.operation)];
+}
+
+/**
  * A stable fingerprint of exactly what confirming this plan would destroy: the
  * destructive operations plus any withheld deletes (which confirm also runs).
  * Independent of per-cycle operation ids, so a re-plan of the same deletes keeps
@@ -115,7 +124,7 @@ export class PlanGate {
   /** User rejected: nothing runs; affected items are returned for manual review. */
   reject(id: string): Operation[] {
     const held = this.take(id);
-    const affected = [...held.verdict.affected, ...held.plan.withheld.map((w) => w.operation)];
+    const affected = heldAffected(held);
     this.audit.append({ kind: 'user', op: 'reject_plan', message: `user rejected held plan ${id}`, outcome: 'skipped', details: { heldId: id, affected: affected.map(describe) } });
     return affected;
   }
