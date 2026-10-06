@@ -221,11 +221,14 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   paint('transfers', 'Transfers', transfers.filtered === 0 ? emptyBody(transfers) : '<table><tr><th>Direction</th><th>Path</th><th>Progress</th><th>Speed</th></tr>' + transferRows + '</table>', transfers);
 
   const conflicts = windowOf('conflicts', data.conflicts, (row) => row.relPath);
+  const resolveButton = (id: number, choice: string, label: string): string =>
+    '<button type="button" class="btn" onclick="act(\'resolve\', {id:' + String(id) + ", choice:'" + choice + "'})\">" + label + '</button>';
   const conflictRows = conflicts.shown.map((row) =>
     '<tr><td>' + esc(row.relPath) + '</td><td>' + esc(row.kind) + '</td><td>' + side(row.local) + '</td><td>' + side(row.remote) + '</td><td>' +
-    '<button type="button" class="btn" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'keep_local'})\">Keep local</button>" +
-    '<button type="button" class="btn" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'keep_remote'})\">Keep remote</button>" +
-    '<button type="button" class="btn" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'keep_both'})\">Keep both</button></td></tr>").join('');
+    // A delete-versus-edit conflict already kept the edit on both sides: only closing it is left
+    // (as in the tray menu).
+    (row.kind === 'delete_vs_edit' ? '' : resolveButton(row.id, 'keep_local', 'Keep local') + resolveButton(row.id, 'keep_remote', 'Keep remote')) +
+    resolveButton(row.id, 'keep_both', 'Keep both') + '</td></tr>').join('');
   paint('conflicts', 'Conflicts', conflicts.filtered === 0 ? emptyBody(conflicts) : '<table><tr><th>Path</th><th>Kind</th><th>Local</th><th>Remote</th><th>Resolve</th></tr>' + conflictRows + '</table>', conflicts);
 
   const quarantine = windowOf('quarantine', data.quarantine, (row) => row.relPath ?? '');

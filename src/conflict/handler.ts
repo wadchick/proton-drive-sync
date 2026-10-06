@@ -201,6 +201,11 @@ export class ConflictHandler {
   async resolve(id: number, choice: Resolution): Promise<Operation[]> {
     const entry = this.ctx.conflicts.get(id);
     if (entry.resolvedAt !== null) throw new Error(`Conflict ${String(id)} is already resolved`);
+    // The deleted side was already re-created from the edit when the conflict was recorded; there
+    // is no other version to choose, so only keep_both (acknowledge and close) applies.
+    if (entry.kind === 'delete_vs_edit' && choice !== 'keep_both') {
+      throw new Error(`Conflict ${String(id)} on ${entry.relPath}: the edited version was already kept on both sides, so there is no version to choose; use keep both to close it`);
+    }
     const ops: Operation[] = [];
     if (entry.kind === 'content' || entry.kind === 'create_create') {
       const copyPath = (entry.local as { path?: string }).path;
