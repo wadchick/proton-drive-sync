@@ -19,6 +19,12 @@ Item {
   property string setupError: ""
   property var queue: []
   property string pendingKind: ""
+  // Engine actions that answer only once their work is done (a whole sync cycle, a confirmed
+  // plan, a resolution). They run in their own process, one at a time, so pause, resume and
+  // status polling never wait behind them.
+  readonly property var longKinds: ["sync", "held", "resolve"]
+  property var longQueue: []
+  property string longKind: ""
 
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string launcherPath: home + "/.local/bin/proton-drive-sync"
@@ -44,10 +50,23 @@ Item {
 
   function enqueue(args, kind) {
     if (!root.launcherOk) return
+    if (root.longKinds.indexOf(kind) !== -1) {
+      var pending = root.longQueue.slice()
+      pending.push({ args: args, kind: kind })
+      root.longQueue = pending
+      root.pumpLong()
+      return
+    }
     var next = root.queue.slice()
     next.push({ args: args, kind: kind })
     root.queue = next
     root.pump()
+  }
+
+  function commandFor(args) {
+    var cmd = [root.launcherPath]
+    for (var i = 0; i < args.length; i++) cmd.push(String(args[i]))
+    return cmd
   }
 
   function pump() {
@@ -56,10 +75,18 @@ Item {
     var job = next.shift()
     root.queue = next
     root.pendingKind = job.kind
-    var cmd = [root.launcherPath]
-    for (var i = 0; i < job.args.length; i++) cmd.push(String(job.args[i]))
-    cli.command = cmd
+    cli.command = root.commandFor(job.args)
     cli.running = true
+  }
+
+  function pumpLong() {
+    if (!root.launcherOk || longCli.running || root.longQueue.length === 0) return
+    var next = root.longQueue.slice()
+    var job = next.shift()
+    root.longQueue = next
+    root.longKind = job.kind
+    longCli.command = root.commandFor(job.args)
+    longCli.running = true
   }
 
   function poll() {
@@ -149,6 +176,22 @@ Item {
     }
     onExited: function(code) {
       root.handle(root.pendingKind, code, cliOut.text, cliErr.text)
+    }
+  }
+
+  Process {
+    id: longCli
+    stdout: StdioCollector {
+      id: longOut
+      waitForEnd: true
+    }
+    stderr: StdioCollector {
+      id: longErr
+      waitForEnd: true
+    }
+    onExited: function(code) {
+      root.handle(root.longKind, code, longOut.text, longErr.text)
+      root.pumpLong()
     }
   }
 
