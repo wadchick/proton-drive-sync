@@ -3,6 +3,7 @@
  * exercised in-process against the fake remote.
  */
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 
 import { history } from '../audit/history.js';
@@ -115,10 +116,21 @@ export async function logout(deps: CommandDeps, json: boolean): Promise<number> 
   }
 }
 
+/**
+ * Expand a leading `~` or `~/` to the home directory. A shell does this for a typed command, but
+ * the panel passes the folder straight through as an argument, so `~/Drive` would otherwise
+ * resolve to a literal `~` folder under the working directory.
+ */
+export function expandHome(p: string, home: string = os.homedir()): string {
+  if (p === '~') return home;
+  if (p.startsWith('~/')) return path.join(home, p.slice(2));
+  return p;
+}
+
 export async function setup(deps: CommandDeps, args: string[], json: boolean): Promise<number> {
   const [localArg, remoteArg] = args;
   if (localArg === undefined || remoteArg === undefined) throw new CliError('usage: setup <local-dir> <remote-folder>', 2);
-  const localRoot = path.resolve(localArg);
+  const localRoot = path.resolve(expandHome(localArg));
   const runtime = await deps.createRuntime();
   try {
     if (runtime.session.current !== 'logged_in') throw new CliError('not logged in; run `proton-drive-sync login` first');
