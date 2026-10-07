@@ -5,6 +5,7 @@
  * Nothing here touches local files or remote nodes; a rejected session only
  * clears the stored credentials and notifies listeners so the engine stops.
  */
+import { RemoteError } from '../interface.js';
 import { ApiError } from './apiClient.js';
 import type { Logger } from './logger.js';
 import type { SessionCredentials } from './sessionCredentials.js';
@@ -73,6 +74,8 @@ export class SessionState {
 }
 
 export function isSessionRejected(error: unknown): boolean {
+  // The SDK adapter normalizes auth failures (401/403) to this kind; it is what the engine passes.
+  if (error instanceof RemoteError) return error.kind === 'auth';
   if (error instanceof ApiError) return error.isAuthError;
   if (typeof error === 'object' && error !== null) {
     const e = error as { statusCode?: unknown; status?: unknown; name?: unknown; code?: unknown };
