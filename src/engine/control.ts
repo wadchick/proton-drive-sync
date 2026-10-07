@@ -55,6 +55,16 @@ interface Request {
   args?: Record<string, unknown>;
 }
 
+/** The request when `value` is a well-formed one, otherwise what is wrong with it. */
+function toRequest(value: unknown): Request | string {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'expected a JSON object';
+  const v = value as { id?: unknown; cmd?: unknown; args?: unknown };
+  if (typeof v.id !== 'number') return 'id must be a number';
+  if (typeof v.cmd !== 'string') return 'cmd must be a string';
+  if (v.args !== undefined && (typeof v.args !== 'object' || v.args === null || Array.isArray(v.args))) return 'args must be an object';
+  return { id: v.id, cmd: v.cmd, ...(v.args !== undefined ? { args: v.args as Record<string, unknown> } : {}) };
+}
+
 export class ControlServer {
   private server: Server | null = null;
   private readonly clients = new Set<Socket>();
@@ -91,7 +101,9 @@ export class ControlServer {
       while (nl !== -1) {
         const line = buffer.slice(0, nl);
         buffer = buffer.slice(nl + 1);
-        if (line.trim() !== '') void this.handleLine(socket, line);
+        // handleLine answers every request itself; anything that still escapes closes this one
+        // connection rather than surfacing as an unhandled rejection that ends the engine.
+        if (line.trim() !== '') this.handleLine(socket, line).catch(() => { socket.destroy(); });
         nl = buffer.indexOf('\n');
       }
     });
@@ -101,11 +113,18 @@ export class ControlServer {
   }
 
   private async handleLine(socket: Socket, line: string): Promise<void> {
-    let request: Request;
+    let parsed: unknown;
     try {
-      request = JSON.parse(line) as Request;
+      parsed = JSON.parse(line);
     } catch {
       this.send(socket, { id: null, ok: false, error: 'invalid JSON' });
+      return;
+    }
+    const request = toRequest(parsed);
+    if (typeof request === 'string') {
+      // Echo the id when there is a usable one, so the client can match the error to its call.
+      const id = typeof parsed === 'object' && parsed !== null && typeof (parsed as { id?: unknown }).id === 'number' ? (parsed as { id: number }).id : null;
+      this.send(socket, { id, ok: false, error: `invalid request: ${request}` });
       return;
     }
     try {

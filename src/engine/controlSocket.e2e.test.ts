@@ -1,4 +1,5 @@
 import { existsSync, writeFileSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -61,5 +62,39 @@ describe('stale control socket', () => {
     expect(await ControlClient.probe(sockPath)).toBe(false);
     // A path that was never a socket does not answer either.
     expect(await ControlClient.probe(path.join(h.base, 'never.sock'))).toBe(false);
+  });
+});
+
+describe('malformed control requests', () => {
+  it('answer with a protocol error instead of crashing the engine, and the connection keeps working', async () => {
+    const sockPath = path.join(h.base, 'malformed.sock');
+    const server = new ControlServer(sockPath, h.live.controlTarget);
+    await server.listen();
+    const socket = createConnection(sockPath);
+    try {
+      const replies: { id: unknown; ok: boolean; error?: string }[] = [];
+      let buffer = '';
+      socket.setEncoding('utf8');
+      socket.on('data', (chunk: string) => {
+        buffer += chunk;
+        let nl = buffer.indexOf('\n');
+        while (nl !== -1) {
+          const message = JSON.parse(buffer.slice(0, nl)) as { event?: string; id: unknown; ok: boolean; error?: string };
+          buffer = buffer.slice(nl + 1);
+          if (message.event === undefined) replies.push(message);
+          nl = buffer.indexOf('\n');
+        }
+      });
+      await new Promise<void>((resolve) => socket.once('connect', () => { resolve(); }));
+      const lines = ['null', '[]', '"status"', '42', '{"id":1}', '{"cmd":"status"}', '{"id":3,"cmd":"status","args":"x"}', '{"id":9,"cmd":"status"}'];
+      socket.write(lines.join('\n') + '\n');
+      for (let i = 0; i < 200 && replies.length < lines.length; i++) await new Promise((r) => setTimeout(r, 10));
+
+      expect(replies.map((r) => [r.id, r.ok])).toEqual([[null, false], [null, false], [null, false], [null, false], [1, false], [null, false], [3, false], [9, true]]);
+      for (const r of replies.slice(0, -1)) expect(r.error).toMatch(/invalid request/);
+    } finally {
+      socket.destroy();
+      await server.close();
+    }
   });
 });

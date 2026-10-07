@@ -109,13 +109,18 @@ interface OperationBase {
   evidence: string[];
 }
 
+/*
+ * `baselineFrom` on a move: the baseline row the move updates, when it is not at `from`. A
+ * divergent-move resolution moves one side to match the other, while the row is still at the
+ * original path; it is renamed only once the move has succeeded.
+ */
 export type Operation =
   | (OperationBase & { kind: 'create_remote_folder'; relPath: string })
   | (OperationBase & { kind: 'create_local_folder'; relPath: string; remoteUid: string })
   | (OperationBase & { kind: 'upload'; relPath: string; mode: 'new' | 'revision'; remoteUid: string | undefined; expectedLocal: LocalFingerprint; expectedRemote: RemoteFingerprint | undefined })
   | (OperationBase & { kind: 'download'; relPath: string; remoteUid: string; expectedRemote: RemoteFingerprint; expectedLocal: LocalFingerprint | undefined })
-  | (OperationBase & { kind: 'move_local'; from: string; to: string; remoteUid: string; expectedLocal: LocalFingerprint })
-  | (OperationBase & { kind: 'move_remote'; remoteUid: string; from: string; to: string; expectedRemote: RemoteFingerprint })
+  | (OperationBase & { kind: 'move_local'; from: string; to: string; remoteUid: string; expectedLocal: LocalFingerprint; baselineFrom?: string })
+  | (OperationBase & { kind: 'move_remote'; remoteUid: string; from: string; to: string; expectedRemote: RemoteFingerprint; baselineFrom?: string })
   | (OperationBase & { kind: 'recycle_local'; relPath: string; itemKind: ItemKind; expectedLocal: LocalFingerprint })
   | (OperationBase & { kind: 'trash_remote'; remoteUid: string; relPath: string; itemKind: ItemKind; expectedRemote: RemoteFingerprint })
   | (OperationBase & { kind: 'update_baseline'; relPath: string; itemKind: ItemKind; local: LocalFingerprint; remote: RemoteFingerprint })
@@ -150,6 +155,8 @@ export interface Conflict {
 
 export type BlockedReason =
   | 'case_collision'
+  /** The local destination is at or under a symlink or other path the scanner does not sync. */
+  | 'unsyncable_destination'
   | 'kind_mismatch'
   | 'target_occupied'
   | 'move_cycle'

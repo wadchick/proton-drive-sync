@@ -18,7 +18,7 @@ import { DigestCache } from '../local/digest.js';
 import { createIgnoreMatcher } from '../local/ignore.js';
 import { scanLocalTree } from '../local/snapshot.js';
 import { reconcile } from '../reconcile/reconcile.js';
-import type { BaselineItem, Plan, ReconcileInput } from '../reconcile/types.js';
+import type { BaselineItem, Operation, Plan, ReconcileInput } from '../reconcile/types.js';
 import { createLogger, silentSink } from '../remote/proton/logger.js';
 import { QuarantineService } from '../safety/quarantine.js';
 import { RecycleBin } from '../safety/recycle.js';
@@ -198,6 +198,11 @@ export class SyncHarness {
 
   async plan(options: { digest?: 'all' | 'engine' } = {}): Promise<Plan> {
     return reconcile(await this.buildInput(options));
+  }
+
+  /** Execute operations that depend on each other, stopping at the first that does not complete. */
+  executeDependent(operations: Operation[]): Promise<ExecutionSummary> {
+    return new Executor(this.ctx).execute({ operations, dependent: true });
   }
 
   async execute(plan: Plan, options: { includeWithheld?: boolean } = {}): Promise<{ executor: Executor; summary: ExecutionSummary }> {
