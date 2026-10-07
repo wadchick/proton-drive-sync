@@ -6,11 +6,12 @@
  * user data; `purge()` is the single, explicit retention command and it logs
  * every path it removes.
  */
-import { mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import type { AuditLog } from '../audit/logger.js';
 import { INTERNAL_DIR_NAME } from '../config/paths.js';
+import { assertWritableInsideRoot } from './pathGuard.js';
 
 export interface RecycledItem {
   /** Timestamp bucket (ms since epoch) the item was recycled in. */
@@ -44,14 +45,20 @@ export class RecycleBin {
   recycle(relPath: string, reason: string): RecycledItem {
     if (relPath === '' || relPath.startsWith('..') || path.isAbsolute(relPath)) throw new Error(`Refusing to recycle invalid path ${relPath}`);
     if (relPath === INTERNAL_DIR_NAME || relPath.startsWith(`${INTERNAL_DIR_NAME}/`)) throw new Error(`Refusing to recycle the internal directory ${relPath}`);
+    // Neither the item's folders nor the bin's own may lead out of the root through a symlink:
+    // the actual destination is checked, bucket included, before and after creating its folders.
+    assertWritableInsideRoot(this.root, relPath);
     const source = path.join(this.root, relPath);
     const st = statSync(source);
     const bucket = this.now();
+    const destinationRel = `${INTERNAL_DIR_NAME}/recycle/${String(bucket)}/${relPath}`;
+    assertWritableInsideRoot(this.root, destinationRel);
     let destination = this.destinationFor(relPath, bucket);
     mkdirSync(path.dirname(destination), { recursive: true });
+    assertWritableInsideRoot(this.root, destinationRel);
     for (let i = 1; ; i++) {
       try {
-        statSync(destination);
+        lstatSync(destination);
         destination = `${this.destinationFor(relPath, bucket)}.${String(i)}`;
       } catch {
         break;
@@ -97,6 +104,9 @@ export class RecycleBin {
    */
   purge(): string[] {
     const cutoff = this.now() - this.retentionDays * 24 * 60 * 60 * 1000;
+    // Purging deletes for good: the bin's folders must be real ones inside the root, never a
+    // symlink to somewhere else.
+    assertWritableInsideRoot(this.root, `${INTERNAL_DIR_NAME}/recycle/0`);
     let buckets: string[];
     try {
       buckets = readdirSync(this.dir);
@@ -108,6 +118,7 @@ export class RecycleBin {
       const bucket = Number(name);
       if (!Number.isFinite(bucket) || bucket >= cutoff) continue;
       const bucketDir = path.join(this.dir, name);
+      if (!lstatSync(bucketDir).isDirectory()) continue; // a symlink or file is not a bucket we made
       const paths: string[] = [];
       const walk = (dir: string, rel: string): void => {
         for (const entry of readdirSync(dir, { withFileTypes: true })) {

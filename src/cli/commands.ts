@@ -78,7 +78,8 @@ export async function login(deps: CommandDeps, usePassword: boolean, json: boole
     if (usePassword) {
       const username = await deps.prompt('Proton username or email: ');
       const password = await deps.prompt('Password: ', true);
-      await runtime.auth.loginViaPassword(username, password, () => deps.prompt('Two-factor code: ', true));
+      // The password is used as typed; a pasted two-factor code may carry stray spaces.
+      await runtime.auth.loginViaPassword(username, password, async () => (await deps.prompt('Two-factor code: ', true)).trim());
     } else {
       await runtime.auth.loginViaWeb((url) => {
         if (json) out(deps, true, '', { signInUrl: url });
