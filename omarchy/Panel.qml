@@ -47,6 +47,24 @@ Panel {
     if (status.state === "paused") return "Paused (" + done + "/" + total + ")"
     return ""
   }
+  // A few hundred conflict rows, each with three buttons, is enough to stall the shell.
+  readonly property int conflictLimit: 5
+  readonly property int conflictCount: service && service.conflicts ? service.conflicts.length : 0
+  property bool detailsOpenedForOverflow: false
+
+  function offerDetailsForOverflow() {
+    if (root.conflictCount <= root.conflictLimit) {
+      root.detailsOpenedForOverflow = false
+      return
+    }
+    if (root.detailsOpenedForOverflow) return
+    if (!(root.service && root.service.doctor && root.service.doctor.detailUrl)) return
+    root.detailsOpenedForOverflow = true
+    root.service.openExternal(root.service.doctor.detailUrl)
+  }
+
+  onConflictCountChanged: root.offerDetailsForOverflow()
+  onServiceChanged: root.offerDetailsForOverflow()
 
   function open() { root.controller.show() }
   function close() { root.controller.hide() }
@@ -64,6 +82,12 @@ Panel {
   }
 
   onOpenedChanged: if (service) service.panelOpen = root.opened
+
+  Connections {
+    target: root.service
+    function onConflictsChanged() { root.offerDetailsForOverflow() }
+    function onDoctorChanged() { root.offerDetailsForOverflow() }
+  }
 
   KeyboardPanel {
     id: panel
@@ -289,10 +313,10 @@ Panel {
 
           // ---------------------------------------------------------- conflicts
           Section {
-            visible: root.service && root.service.conflicts && root.service.conflicts.length > 0
+            visible: root.conflictCount > 0
             title: "CONFLICTS"
             Repeater {
-              model: root.service && root.service.conflicts ? root.service.conflicts.length : 0
+              model: Math.min(root.conflictCount, root.conflictLimit)
               delegate: Column {
                 required property int index
                 width: content.width
@@ -336,6 +360,11 @@ Panel {
                   }
                 }
               }
+            }
+            ActionButton {
+              visible: root.conflictCount > root.conflictLimit && root.service && root.service.doctor && root.service.doctor.detailUrl
+              text: (root.conflictCount - root.conflictLimit) + " more on the details page"
+              onClicked: root.service.openExternal(root.service.doctor.detailUrl)
             }
           }
 
