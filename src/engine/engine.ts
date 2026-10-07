@@ -515,7 +515,7 @@ export class SyncEngine extends EventEmitter {
     return 'recovered';
   }
 
-  private async executePlan(plan: Plan): Promise<ExecutionSummary> {
+  private async executePlan(plan: Plan, options: { dependent?: boolean } = {}): Promise<ExecutionSummary> {
     const fileTotal = plan.operations.filter((o) => o.kind === 'upload' || o.kind === 'download').length;
     this.refreshLibraryCache();
     this.libraryFrozen = true;
@@ -524,7 +524,7 @@ export class SyncEngine extends EventEmitter {
     this.executor = new Executor(this.ctx());
     if (this.userPaused) this.executor.pause();
     try {
-      const summary = await this.executor.execute(plan);
+      const summary = await this.executor.execute({ operations: plan.operations, ...(options.dependent === true ? { dependent: true } : {}) });
       if (summary.stoppedEarly === 'disk_full') this.setStateSafely('error', 'disk full');
       if (summary.stoppedEarly === 'auth') {
         // A transfer that the server rejected clears the session, exactly as a rejected listing does,
@@ -657,10 +657,15 @@ export class SyncEngine extends EventEmitter {
     // Resolving changes the baseline and plans moves, recycles and trashes: refuse it for the wrong root.
     const failure = await this.preflightFailure(0);
     if (failure !== null) throw new Error(`cannot resolve conflict ${String(id)}: ${failure}`);
-    const ops = await this.deps.conflicts.resolve(id, choice);
-    if (ops.length > 0) await this.executePlan({ ...emptyPlan(), operations: ops });
-    this.trigger('conflict resolved');
-    this.publish();
+    // A resolution's steps depend on each other: execution stops at the first one that does not
+    // complete, and the conflict closes only once every step has.
+    const run = async (ops: Operation[]): Promise<boolean> => (await this.executePlan({ ...emptyPlan(), operations: ops }, { dependent: true })).completed === ops.length;
+    try {
+      await this.deps.conflicts.resolve(id, choice, run);
+    } finally {
+      this.trigger('conflict resolved');
+      this.publish();
+    }
   }
 
   releaseQuarantine(id: number): void {

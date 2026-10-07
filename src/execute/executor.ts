@@ -8,7 +8,7 @@
  * structural operations run in plan order. Pause and cancel take effect at
  * operation boundaries.
  */
-import { mkdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { mkdir, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -147,6 +147,8 @@ export class Executor {
           summary.stoppedError = this.stoppingError;
           break;
         }
+        // After the stop reasons above, which the engine acts on.
+        if (plan.dependent === true && results.some((r) => r !== 'completed')) break;
       } else {
         const r = await this.runOne(op);
         this.tally(summary, r);
@@ -156,6 +158,8 @@ export class Executor {
           if (r === 'auth') summary.stoppedError = this.stoppingError;
           break;
         }
+        // After the stop reasons above, which the engine acts on.
+        if (plan.dependent === true && r !== 'completed') break;
       }
     }
     return summary;
@@ -466,12 +470,12 @@ export class Executor {
         const node = await remote.getNode(op.remoteUid);
         if (node === null) throw new VerificationError(`remote node ${op.remoteUid} vanished after local move`);
         const st = await stat(to);
-        const row = this.ctx.baseline.byPath(op.from);
+        const row = this.ctx.baseline.byPath(op.baselineFrom ?? op.from);
         const kind = st.isDirectory() ? 'dir' : 'file';
         return {
           upserts: [{ ...this.localRow(op.to, kind, node, row?.localSha1 ?? null) }],
           removeSubtrees: [],
-          renames: [{ from: op.from, to: op.to }],
+          renames: [{ from: op.baselineFrom ?? op.from, to: op.to }],
           outcome: { from: op.from, to: op.to },
         };
       }
@@ -483,9 +487,13 @@ export class Executor {
         if (node.name !== nameOf(op.to)) node = await remote.rename(op.remoteUid, nameOf(op.to));
         const verify = await remote.getNode(op.remoteUid);
         if (verify?.parentUid !== targetParent || verify.name !== nameOf(op.to)) throw new VerificationError(`remote node ${op.remoteUid} is not at ${op.to} after move`);
-        const row = this.ctx.baseline.byPath(op.from);
+        // Remote first, local follows (conflict resolution plans a move_local right after): until
+        // the local item is at `to`, the baseline keeps describing it at `from`, and the move_local
+        // records the new location. A failed local move then still reads as a remote rename.
+        if (!existsSync(path.join(root, op.to))) return { remoteChanges: [{ type: 'upsert', node: verify }], upserts: [], removeSubtrees: [], renames: [], outcome: { from: op.from, to: op.to, localMoveFollows: true } };
+        const row = this.ctx.baseline.byPath(op.baselineFrom ?? op.from);
         const kind = verify.type === 'folder' ? 'dir' : 'file';
-        return { remoteChanges: [{ type: 'upsert', node: verify }], upserts: [this.localRow(op.to, kind, verify, row?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.from, to: op.to }], outcome: { from: op.from, to: op.to } };
+        return { remoteChanges: [{ type: 'upsert', node: verify }], upserts: [this.localRow(op.to, kind, verify, row?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.baselineFrom ?? op.from, to: op.to }], outcome: { from: op.from, to: op.to } };
       }
       case 'recycle_local': {
         const item = this.ctx.recycle.recycle(op.relPath, 'deleted remotely');
@@ -531,8 +539,9 @@ export class Executor {
       case 'move_remote': {
         const node = await remote.getNode(op.remoteUid);
         if (node !== null && node.parentUid === this.remoteParentUid(op.to) && node.name === nameOf(op.to)) {
-          const row = this.ctx.baseline.byPath(op.from);
-          return { upserts: [this.localRow(op.to, node.type === 'folder' ? 'dir' : 'file', node, row?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.from, to: op.to }], outcome: { landedBeforeRetry: true } };
+          if (!existsSync(path.join(this.ctx.root, op.to))) return { upserts: [], removeSubtrees: [], renames: [], outcome: { landedBeforeRetry: true, localMoveFollows: true } };
+          const row = this.ctx.baseline.byPath(op.baselineFrom ?? op.from);
+          return { upserts: [this.localRow(op.to, node.type === 'folder' ? 'dir' : 'file', node, row?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.baselineFrom ?? op.from, to: op.to }], outcome: { landedBeforeRetry: true } };
         }
         return null;
       }
