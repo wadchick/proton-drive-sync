@@ -134,6 +134,23 @@ describe('delete versus edit', () => {
     h.assertBaselineConsistent();
   });
 
+  it('refuses keep local or keep remote, which would do nothing: the edit is already kept', async () => {
+    h.write('keep.txt', 'v1');
+    await h.settle();
+    await h.fake.trash([h.remotePathToUid('keep.txt') ?? '']);
+    h.write('keep.txt', 'v2 edited');
+    await settleWithConflicts();
+    const entry = new ConflictRepo(h.store).open()[0];
+    if (entry === undefined) throw new Error('no conflict');
+    for (const choice of ['keep_local', 'keep_remote'] as const) {
+      await expect(handler.resolve(entry.id, choice, run)).rejects.toThrow(ResolutionError);
+    }
+    expect(new ConflictRepo(h.store).open().map((c) => c.id), 'the entry stays open').toEqual([entry.id]);
+    expect(await handler.resolve(entry.id, 'keep_both', run)).toEqual([]);
+    expect(new ConflictRepo(h.store).open()).toEqual([]);
+    expect(h.localFiles().get('keep.txt')).toBe('v2 edited');
+  });
+
   it('deleted locally, edited remotely: the remote version is downloaded again', async () => {
     h.write('keep.txt', 'v1');
     await h.settle();

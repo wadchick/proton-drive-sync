@@ -270,6 +270,8 @@ Panel {
             Row {
               spacing: Style.space(10)
               Text {
+                // A delete-versus-edit conflict already kept the edit: only "Keep both" applies.
+                visible: row ? row.kind !== "delete_vs_edit" : false
                 text: "Keep local"
                 font.underline: true
                 color: root.barForeground
@@ -277,6 +279,8 @@ Panel {
                 MouseArea { anchors.fill: parent; onClicked: root.service.resolveConflict(row.id, "keep_local") }
               }
               Text {
+                // A delete-versus-edit conflict already kept the edit: only "Keep both" applies.
+                visible: row ? row.kind !== "delete_vs_edit" : false
                 text: "Keep remote"
                 font.underline: true
                 color: root.barForeground

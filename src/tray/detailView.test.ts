@@ -81,6 +81,17 @@ describe('applySnapshot', () => {
     expect(el('flags').textContent).toBe('');
   });
 
+  it('offers only keep both for a delete-versus-edit conflict, as the tray menu does', () => {
+    fixture();
+    applySnapshot(document, dataFor(statusWith({ state: 'attention' }), {
+      conflicts: [{ id: 7, relPath: 'kept.txt', kind: 'delete_vs_edit', local: { deleted: true }, remote: { size: 2 } }],
+    }));
+    const html = el('conflicts').innerHTML;
+    expect(html).toContain("choice:'keep_both'");
+    expect(html).not.toContain("choice:'keep_local'");
+    expect(html).not.toContain("choice:'keep_remote'");
+  });
+
   it('never leaves the page a blank shell: even a fresh status fills the fields', () => {
     fixture();
     applySnapshot(document, { status: statusWith({ counts: { baseline: 2, localFiles: 2, remoteFiles: 2, pairedFiles: 2, pairedFolders: 0, protonDocuments: 0, onlyLocal: 0, onlyRemote: 0 } }), conflicts: [], quarantine: [], recycle: [] });
