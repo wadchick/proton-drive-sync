@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SecretRegistry } from '../../audit/redact.js';
+import { RemoteError } from '../interface.js';
 import { UnsafeFileSecretStore } from '../../config/secretStore.js';
 import { AccountApi } from './accountApi.js';
 import { ProtonApiClient } from './apiClient.js';
@@ -13,7 +14,7 @@ import { Auth, LoginError } from './auth.js';
 import { encryptForkPayload, generateSignInUrl, parseUserKeyPassword } from './authWeb.js';
 import { createLogger, silentSink } from './logger.js';
 import { Credentials } from './sessionCredentials.js';
-import { SessionState } from './sessionState.js';
+import { isSessionRejected, SessionState } from './sessionState.js';
 import { Srp, type SrpPrimitives } from './srpModule.js';
 
 type Handler = (req: IncomingMessage, res: ServerResponse, body: string) => void;
@@ -255,6 +256,24 @@ describe('SessionState', () => {
     // Only the failing request and the refresh attempt were made; nothing mutating.
     expect(requests.map((r) => `${r.method} ${r.url}`)).toEqual(['GET /drive/v2/volumes', 'POST /auth/v4/refresh']);
     expect(await state.handleRemoteError(new Error('disk full'))).toBe(false);
+  });
+
+  it('recognizes the adapter\'s normalized auth error and clears the stored session', async () => {
+    await creds.setUserKeyPassword('kp');
+    await creds.setSessionInfo({ uid: 'u', accessToken: 'a', refreshToken: 'r' });
+    const state = new SessionState(creds, createLogger('s', silentSink));
+    await state.resume();
+    expect(isSessionRejected(new RemoteError('expired', 'auth', false))).toBe(true);
+    expect(await state.handleRemoteError(new RemoteError('list: session rejected', 'auth', false))).toBe(true);
+    expect(state.current).toBe('needs_login');
+    expect(creds.isLoggedIn(), 'the expired session must not stay stored').toBe(false);
+    expect(requests, 'clearing the session is local').toHaveLength(0);
+  });
+
+  it('does not treat other remote error kinds as a rejected session', () => {
+    for (const kind of ['connection', 'server', 'not_found', 'rate_limited', 'validation'] as const) {
+      expect(isSessionRejected(new RemoteError('x', kind, false)), kind).toBe(false);
+    }
   });
 
   it('starts logged out when nothing is stored', async () => {

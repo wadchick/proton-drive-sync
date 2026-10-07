@@ -29,6 +29,7 @@ import { RemoteError } from '../remote/interface.js';
 import type { Logger } from '../remote/proton/logger.js';
 import type { SessionState } from '../remote/proton/sessionState.js';
 import { heldAffected, type PlanGate } from '../safety/brake.js';
+import { blockUnsyncableTargets } from '../safety/pathGuard.js';
 import type { PreflightResult } from '../safety/preflight.js';
 import type { QuarantineService } from '../safety/quarantine.js';
 import type { BaselineRepo } from '../state/baseline.ts';
@@ -78,6 +79,14 @@ export class SyncEngine extends EventEmitter {
   private stopped = false;
   private lastSnapshot: LocalSnapshot | null = null;
   private localRootAvailable = true;
+  /**
+   * Set the moment a remote call is rejected for auth, before the session finishes clearing the
+   * stored credentials (which takes a secret-store write); cleared by the next login. No cycle
+   * runs while it is set.
+   */
+  private sessionRejected = false;
+  /** Startup has begun (journal recovery, watcher, remote listing); a later login only re-syncs. */
+  private startedUp = false;
   /** Journal recovery waits for a passing preflight, so it may run in a later cycle than startup. */
   private journalRecovered = false;
   private readonly transfers = new Map<string, TransferStatus>();
@@ -93,6 +102,21 @@ export class SyncEngine extends EventEmitter {
     this.userPaused = deps.config.startPaused;
     this.status = initialStatus(deps.config.dryRun, this.now());
     this.ignoreMatcher = createIgnoreMatcher(deps.config.ignore);
+    // One listener for the engine's lifetime: a session lost at any time stops sync, and a new
+    // login resumes it, whether the engine started logged in or not.
+    deps.session?.onChange((s) => {
+      if (s === 'needs_login') {
+        this.sessionRejected = true;
+        if (this.status.state !== 'needs_login' && this.status.state !== 'stopped') this.setStateSafely('needs_login', 'session rejected');
+        return;
+      }
+      this.sessionRejected = false;
+      if (this.stopped || this.status.state !== 'needs_login') return;
+      if (!this.startedUp) void this.start(); // which also honours a pause
+      // Logged in, but the user's pause still holds: show it again and sync nothing yet.
+      else if (this.userPaused) this.setStateSafely('paused', 'paused by user');
+      else this.trigger('logged in');
+    });
   }
 
   /**
@@ -196,14 +220,12 @@ export class SyncEngine extends EventEmitter {
 
   async start(): Promise<void> {
     if (this.deps.session !== undefined && this.deps.session.current !== 'logged_in') {
+      // The session listener (constructor) starts the engine after a login.
       this.setState('needs_login', 'no stored session');
-      this.deps.session.onChange((s) => {
-        if (s === 'logged_in' && this.status.state === 'needs_login') void this.start();
-        if (s === 'needs_login' && this.status.state !== 'needs_login' && this.status.state !== 'stopped') this.setState('needs_login', 'session rejected');
-      });
       return;
     }
-    if (this.status.state !== 'starting' && this.status.state !== 'needs_login') return;
+    if (this.startedUp || (this.status.state !== 'starting' && this.status.state !== 'needs_login')) return;
+    this.startedUp = true;
     this.setState('scanning', 'recovering journal');
     await this.recoverJournalIfSafe();
 
@@ -306,12 +328,29 @@ export class SyncEngine extends EventEmitter {
     if (state === 'unthrottled' && this.status.state === 'throttled') this.setStateSafely(this.cycleRunning !== null ? 'syncing' : this.restingState());
   }
 
+  /**
+   * The remote rejected the session. Stop syncing now: clearing the stored session is
+   * asynchronous, and until it finishes the session still reads as logged in.
+   */
+  private rejectSession(error: unknown): void {
+    if (this.deps.session !== undefined) {
+      this.sessionRejected = true;
+      void this.deps.session.handleRemoteError(error).then((rejected) => {
+        // The session did not count it as a rejection and stays logged in: carry on syncing.
+        if (!rejected && this.deps.session?.current === 'logged_in') {
+          this.sessionRejected = false;
+          this.trigger('session kept');
+        }
+      });
+    }
+    this.setStateSafely('needs_login', 'session rejected');
+  }
+
   private remoteFailure(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
     this.lastRemoteFailure = message;
     if (error instanceof RemoteError && error.kind === 'auth') {
-      void this.deps.session?.handleRemoteError(error);
-      this.setStateSafely('needs_login', 'session rejected');
+      this.rejectSession(error);
       return;
     }
     if (error instanceof RemoteError && (error.kind === 'connection' || error.kind === 'server' || error.kind === 'rate_limited')) {
@@ -376,7 +415,7 @@ export class SyncEngine extends EventEmitter {
 
   private async cycleOnce(reason: string): Promise<CycleResult> {
     if (this.userPaused) return { plan: emptyPlan(), summary: null, held: false, skipped: 'paused' };
-    if (this.deps.session !== undefined && this.deps.session.current !== 'logged_in') return { plan: emptyPlan(), summary: null, held: false, skipped: 'needs login' };
+    if (this.sessionRejected || (this.deps.session !== undefined && this.deps.session.current !== 'logged_in')) return { plan: emptyPlan(), summary: null, held: false, skipped: 'needs login' };
     this.status = { ...this.status, progress: null };
     this.setStateSafely('scanning', reason);
     this.status = { ...this.status, lastCycleAt: this.now() };
@@ -407,7 +446,8 @@ export class SyncEngine extends EventEmitter {
     const local = this.withHiddenPaths(await localViewFromSnapshot(snapshot, this.deps.digests, needDigest, this.localRootAvailable), snapshot, baseline);
     const remote = this.deps.mirror.view();
     const sets = this.deps.quarantine.sets();
-    const plan = reconcile({ baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids });
+    // Nothing is written at or under a path the scanner did not sync (e.g. a symlink).
+    const plan = blockUnsyncableTargets(reconcile({ baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids }), snapshot.unsyncable);
     this.deps.scans.markCompleted('local', snapshot.scannedAt);
     this.status = {
       ...this.status,
@@ -439,7 +479,7 @@ export class SyncEngine extends EventEmitter {
       const base2 = new Map<string, BaselineItem>();
       for (const row of this.deps.baseline.all()) base2.set(row.relPath, baselineRowToItem(row));
       const local2 = this.withHiddenPaths(await localViewFromSnapshot(snapshot2, this.deps.digests, needDigest, this.localRootAvailable), snapshot2, base2);
-      const replanned = reconcile({ baseline: base2, local: local2, remote: this.deps.mirror.view(), quarantinedPaths: sets.paths, quarantinedUids: sets.uids });
+      const replanned = blockUnsyncableTargets(reconcile({ baseline: base2, local: local2, remote: this.deps.mirror.view(), quarantinedPaths: sets.paths, quarantinedUids: sets.uids }), snapshot2.unsyncable);
       return this.gateAndExecute(replanned);
     }
     return this.gateAndExecute(plan);
@@ -513,7 +553,7 @@ export class SyncEngine extends EventEmitter {
     return 'recovered';
   }
 
-  private async executePlan(plan: Plan): Promise<ExecutionSummary> {
+  private async executePlan(plan: Plan, options: { dependent?: boolean } = {}): Promise<ExecutionSummary> {
     const fileTotal = plan.operations.filter((o) => o.kind === 'upload' || o.kind === 'download').length;
     this.refreshLibraryCache();
     this.libraryFrozen = true;
@@ -522,13 +562,12 @@ export class SyncEngine extends EventEmitter {
     this.executor = new Executor(this.ctx());
     if (this.userPaused) this.executor.pause();
     try {
-      const summary = await this.executor.execute(plan);
+      const summary = await this.executor.execute({ operations: plan.operations, ...(options.dependent === true ? { dependent: true } : {}) });
       if (summary.stoppedEarly === 'disk_full') this.setStateSafely('error', 'disk full');
       if (summary.stoppedEarly === 'auth') {
         // A transfer that the server rejected clears the session, exactly as a rejected listing does,
         // so a later login in the same process transitions back out of needs-login and resumes.
-        void this.deps.session?.handleRemoteError(summary.stoppedError);
-        this.setStateSafely('needs_login', 'session rejected');
+        this.rejectSession(summary.stoppedError);
       }
       // Our own local writes: refresh the snapshot now so the next cycle never sees a stale view.
       const touched = new Set<string>();
@@ -655,10 +694,15 @@ export class SyncEngine extends EventEmitter {
     // Resolving changes the baseline and plans moves, recycles and trashes: refuse it for the wrong root.
     const failure = await this.preflightFailure(0);
     if (failure !== null) throw new Error(`cannot resolve conflict ${String(id)}: ${failure}`);
-    const ops = await this.deps.conflicts.resolve(id, choice);
-    if (ops.length > 0) await this.executePlan({ ...emptyPlan(), operations: ops });
-    this.trigger('conflict resolved');
-    this.publish();
+    // A resolution's steps depend on each other: execution stops at the first one that does not
+    // complete, and the conflict closes only once every step has.
+    const run = async (ops: Operation[]): Promise<boolean> => (await this.executePlan({ ...emptyPlan(), operations: ops }, { dependent: true })).completed === ops.length;
+    try {
+      await this.deps.conflicts.resolve(id, choice, run);
+    } finally {
+      this.trigger('conflict resolved');
+      this.publish();
+    }
   }
 
   releaseQuarantine(id: number): void {

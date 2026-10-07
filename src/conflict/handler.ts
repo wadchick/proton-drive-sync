@@ -23,6 +23,7 @@ import path from 'node:path';
 import type { AuditLog } from '../audit/logger.js';
 import type { Conflict, LocalFingerprint, Operation, RemoteFingerprint } from '../reconcile/types.js';
 import type { RemoteDrive, RemoteNode } from '../remote/interface.js';
+import { assertWritableInsideRoot } from '../safety/pathGuard.js';
 import type { BaselineRepo } from '../state/baseline.ts';
 import type { JournalRepo } from '../state/journal.ts';
 import type { ConflictEntry, ConflictRepo } from '../state/misc.ts';
@@ -62,6 +63,14 @@ function localFp(root: string, relPath: string): LocalFingerprint | undefined {
 
 function remoteFp(node: RemoteNode): RemoteFingerprint {
   return { uid: node.uid, parentUid: node.parentUid, name: node.name, revisionUid: node.revisionUid, sha1: node.claimedSha1 };
+}
+
+/** The user's choice cannot be applied (yet); nothing was changed and the conflict stays open. */
+export class ResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ResolutionError';
+  }
 }
 
 export class ConflictHandler {
@@ -128,6 +137,8 @@ export class ConflictHandler {
       // Journal the local rename (with the conflict kind) so recovery can finish it after a crash.
       const entry = this.ctx.journal.plan({ op: 'conflict_rename_local', relPath: copyPath, previousRelPath: c.relPath, nodeUid: c.remoteUid ?? null, intended: { kind: 'conflict_rename_local', from: c.relPath, to: copyPath, conflictKind: c.kind }, preState: { local } });
       this.ctx.journal.start(entry.id);
+      assertWritableInsideRoot(this.ctx.root, c.relPath);
+      assertWritableInsideRoot(this.ctx.root, copyPath);
       renameSync(path.join(this.ctx.root, c.relPath), path.join(this.ctx.root, copyPath));
       // One transaction: the original path's row goes, the conflict enters the inbox and the journal
       // completes together, so a crash cannot leave a renamed file with no conflict to resolve.
@@ -198,29 +209,52 @@ export class ConflictHandler {
    * Resolve an inbox entry. Returns executor operations to run (may be empty).
    * Every removal is a recycle or a trash; nothing is permanently deleted.
    */
-  async resolve(id: number, choice: Resolution): Promise<Operation[]> {
+  /**
+   * Apply the user's choice for conflict `id`. The operations it needs are handed to `run`,
+   * which executes them in order as dependent steps (stopping at the first that does not
+   * complete) and reports whether every one completed. The entry is closed
+   * only after they all did; otherwise it stays open to try again. Throws
+   * `ResolutionError` when the choice cannot be applied (yet), changing nothing.
+   */
+  async resolve(id: number, choice: Resolution, run: (ops: Operation[]) => Promise<boolean>): Promise<Operation[]> {
     const entry = this.ctx.conflicts.get(id);
     if (entry.resolvedAt !== null) throw new Error(`Conflict ${String(id)} is already resolved`);
+    const ops = await this.planResolution(entry, choice);
+    if (ops.length > 0 && !(await run(ops))) {
+      throw new ResolutionError(`conflict ${String(id)} on ${entry.relPath} was not fully resolved (not every operation completed); it stays open, so try again`);
+    }
+    this.ctx.conflicts.resolve(id, choice);
+    this.ctx.audit.append({ kind: 'user', op: 'resolve_conflict', message: `user resolved conflict ${String(id)} on ${entry.relPath}: ${choice}`, path: entry.relPath, ...(entry.nodeUid !== null ? { nodeUid: entry.nodeUid } : {}), outcome: 'ok', details: { operations: ops.map((o) => o.kind) } });
+    return ops;
+  }
+
+  private async planResolution(entry: ConflictEntry, choice: Resolution): Promise<Operation[]> {
     const ops: Operation[] = [];
     if (entry.kind === 'content' || entry.kind === 'create_create') {
       const copyPath = (entry.local as { path?: string }).path;
       if (choice === 'keep_remote' && copyPath !== undefined) ops.push(...(await this.removeBothSides(copyPath)));
       if (choice === 'keep_local' && copyPath !== undefined) {
+        // The move comes first: without it, removing the original would leave neither version
+        // at the original path.
+        const move = await this.moveBothSides(copyPath, entry.relPath);
         ops.push(...(await this.removeBothSides(entry.relPath)));
-        ops.push(...(await this.moveBothSides(copyPath, entry.relPath)));
+        ops.push(...move);
       }
     } else if (entry.kind === 'divergent_move') {
       const localPath = (entry.local as { path?: string }).path;
       const remotePath = (entry.remote as { path?: string }).path;
+      // The baseline row stays at the original path until the move succeeds (`baselineFrom`): a
+      // move that fails leaves the conflict as it was, instead of a baseline that makes the next
+      // sync undo the user's choice.
       if (choice === 'keep_local' && localPath !== undefined && remotePath !== undefined && entry.nodeUid !== null) {
         const node = await this.ctx.remote.getNode(entry.nodeUid);
-        if (node !== null) ops.push({ id: this.opId(), kind: 'move_remote', remoteUid: node.uid, from: remotePath, to: localPath, expectedRemote: remoteFp(node), evidence: ['user chose the local destination'] });
-        this.ctx.baseline.rename(entry.relPath, localPath);
+        if (node === null || node.isTrashed) throw new ResolutionError(`the item at ${remotePath} is no longer on Proton`);
+        ops.push({ id: this.opId(), kind: 'move_remote', remoteUid: node.uid, from: remotePath, to: localPath, expectedRemote: remoteFp(node), baselineFrom: entry.relPath, evidence: ['user chose the local destination'] });
       }
       if (choice === 'keep_remote' && localPath !== undefined && remotePath !== undefined && entry.nodeUid !== null) {
         const local = localFp(this.ctx.root, localPath);
-        if (local !== undefined) ops.push({ id: this.opId(), kind: 'move_local', from: localPath, to: remotePath, remoteUid: entry.nodeUid, expectedLocal: local, evidence: ['user chose the remote destination'] });
-        this.ctx.baseline.rename(entry.relPath, remotePath);
+        if (local === undefined) throw new ResolutionError(`the local item ${localPath} is no longer there`);
+        ops.push({ id: this.opId(), kind: 'move_local', from: localPath, to: remotePath, remoteUid: entry.nodeUid, expectedLocal: local, baselineFrom: entry.relPath, evidence: ['user chose the remote destination'] });
       }
       if (choice === 'keep_both') {
         // Detach: both destinations become new items and are created on the other side.
@@ -229,31 +263,37 @@ export class ConflictHandler {
       }
     }
     // delete_vs_edit: the kept side was already re-created; any choice just closes the entry.
-    this.ctx.conflicts.resolve(id, choice);
-    this.ctx.audit.append({ kind: 'user', op: 'resolve_conflict', message: `user resolved conflict ${String(id)} on ${entry.relPath}: ${choice}`, path: entry.relPath, ...(entry.nodeUid !== null ? { nodeUid: entry.nodeUid } : {}), outcome: 'ok', details: { operations: ops.map((o) => o.kind) } });
     return ops;
   }
 
-  /** Recycle the local item and trash the remote item at `relPath`, using current fingerprints. */
+  /**
+   * Trash the remote item and recycle the local item at `relPath`, using current fingerprints.
+   * Remote first: the trash needs the baseline row that recycling removes, so if a resolution
+   * stops part way, the retry still finds whatever is left on both sides.
+   */
   private async removeBothSides(relPath: string): Promise<Operation[]> {
     const ops: Operation[] = [];
     const row = this.ctx.baseline.byPath(relPath);
     const local = localFp(this.ctx.root, relPath);
-    if (local !== undefined) ops.push({ id: this.opId(), kind: 'recycle_local', relPath, itemKind: row?.kind ?? 'file', expectedLocal: local, evidence: ['conflict resolution'] });
     if (row !== null) {
       const node = await this.ctx.remote.getNode(row.nodeUid);
       if (node !== null && !node.isTrashed) ops.push({ id: this.opId(), kind: 'trash_remote', remoteUid: node.uid, relPath, itemKind: row.kind, expectedRemote: remoteFp(node), evidence: ['conflict resolution'] });
     }
+    if (local !== undefined) ops.push({ id: this.opId(), kind: 'recycle_local', relPath, itemKind: row?.kind ?? 'file', expectedLocal: local, evidence: ['conflict resolution'] });
     return ops;
   }
 
-  /** Rename the synced item at `from` to `to` on both sides (remote first, then local follows). */
+  /**
+   * Rename the synced item at `from` to `to` on both sides (remote first, then local follows).
+   * Throws `ResolutionError` when it is not synced on both sides, so nothing can be renamed.
+   */
   private async moveBothSides(from: string, to: string): Promise<Operation[]> {
     const row = this.ctx.baseline.byPath(from);
-    if (row === null) return [];
+    if (row === null) throw new ResolutionError(`the local copy ${from} is not synced to Proton yet; keep local can be applied once it is`);
     const node = await this.ctx.remote.getNode(row.nodeUid);
     const local = localFp(this.ctx.root, from);
-    if (node === null || local === undefined) return [];
+    if (local === undefined) throw new ResolutionError(`the local copy ${from} is no longer there`);
+    if (node === null || node.isTrashed) throw new ResolutionError(`the copy of ${from} on Proton is no longer there`);
     return [
       { id: this.opId(), kind: 'move_remote', remoteUid: node.uid, from, to, expectedRemote: remoteFp(node), evidence: ['conflict resolution: keep local'] },
       { id: this.opId(), kind: 'move_local', from, to, remoteUid: node.uid, expectedLocal: local, evidence: ['conflict resolution: keep local'] },

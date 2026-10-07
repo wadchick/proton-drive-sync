@@ -98,6 +98,8 @@ export class EngineHarness {
       for (const e of readdirSync(dir, { withFileTypes: true })) {
         if (rel === '' && e.name === '.proton-sync') continue;
         const r = rel === '' ? e.name : `${rel}/${e.name}`;
+        // Like the scanner, never follow a symlink: what it points to is not in the tree.
+        if (e.isSymbolicLink()) continue;
         if (e.isDirectory()) walk(path.join(dir, e.name), r);
         else out.set(r, readFileSync(path.join(dir, e.name), 'utf8'));
       }
