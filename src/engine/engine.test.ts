@@ -2,6 +2,7 @@ import { rmSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { BaselineRepo } from '../state/baseline.js';
 import { EngineHarness } from '../testing/engineHarness.js';
 import { ControlClient, ControlServer } from './control.js';
 
@@ -211,6 +212,10 @@ describe('SyncEngine', () => {
     await h.waitFor(['attention']);
     await h.waitForConvergence();
     const conflict = h.bundle?.controlTarget.listConflicts()[0];
+    // keep_local needs both versions synced (it refuses until then): wait for the original's row.
+    const baseline = new BaselineRepo(h.live.store);
+    for (let i = 0; i < 200 && baseline.byPath('doc.md') === null; i++) await new Promise((r) => setTimeout(r, 20));
+    expect(baseline.byPath('doc.md')).not.toBeNull();
 
     await h.bundle?.engine.resolveConflict(conflict?.id ?? 0, 'keep_local');
     await h.waitForConvergence();

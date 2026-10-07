@@ -293,6 +293,28 @@ describe('a resolution closes the conflict only once it has been applied', () =>
     expect(h.recycledContents(), 'nor recycled locally').toEqual([]);
   });
 
+  it('keep_local waits until the Proton original is synced too, instead of leaving it beside the copy', async () => {
+    const { id, copy } = await freshCreateCreate();
+    // Only the copy's upload runs: the remote original is not downloaded, so it has no baseline row yet.
+    const plan = await h.plan();
+    await h.execute({ ...plan, operations: plan.operations.filter((o) => o.kind === 'upload' || o.kind === 'create_remote_folder') });
+    expect(h.remotePathToUid(copy), 'the copy is synced').toBeDefined();
+    expect(h.baseline.byPath('a.txt'), 'the original is not paired yet').toBeNull();
+
+    await expect(handler.resolve(id, 'keep_local', run)).rejects.toThrow(/Proton version of a.txt is not synced yet/);
+    expect(isOpen(id)).toBe(true);
+    expect(h.fake.trashedUids()).toEqual([]);
+
+    // Once the original is synced, keep_local replaces it.
+    await settleWithConflicts();
+    await handler.resolve(id, 'keep_local', run);
+    await settleWithConflicts();
+    expect(isOpen(id)).toBe(false);
+    expect([...h.localFiles().entries()]).toEqual([['a.txt', 'local']]);
+    expect(new ConflictRepo(h.store).open()).toEqual([]);
+    sameOnBothSides();
+  });
+
   it('keep_local works once the copy has synced', async () => {
     const { id } = await freshCreateCreate();
     await settleWithConflicts();
