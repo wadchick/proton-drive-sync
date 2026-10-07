@@ -96,7 +96,9 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(340))
+    // A third of the old 340-wide card was too narrow for "Open details"
+    // once its icon was in the label, and the file count was cut off.
+    contentWidth: panel.fittedContentWidth(Style.space(440))
     contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(560))
 
     PanelKeyCatcher {
@@ -234,15 +236,11 @@ Panel {
             title: "TRANSFERS"
             Repeater {
               model: root.transfers.length
-              delegate: Text {
+              delegate: ElidedText {
                 required property int index
                 width: content.width
-                textFormat: Text.PlainText
+                fontSize: Style.font.bodySmall
                 text: ProtonDriveModel.transferLine(root.transfers[index])
-                color: root.barForeground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                elide: Text.ElideMiddle
               }
             }
           }
@@ -283,15 +281,12 @@ Panel {
             }
             Repeater {
               model: root.held && root.held.affected ? root.held.affected.length : 0
-              delegate: Text {
+              delegate: ElidedText {
                 required property int index
                 width: content.width
-                textFormat: Text.PlainText
                 text: root.held ? String(root.held.affected[index]) : ""
                 color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                elide: Text.ElideMiddle
+                fontSize: Style.font.bodySmall
               }
             }
             Row {
@@ -322,14 +317,9 @@ Panel {
                 width: content.width
                 spacing: Style.space(4)
                 readonly property var row: root.service.conflicts[index]
-                Text {
+                ElidedText {
                   width: parent.width
-                  textFormat: Text.PlainText
                   text: row ? String(row.relPath || row.id) : ""
-                  color: root.barForeground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  elide: Text.ElideMiddle
                 }
                 Row {
                   width: parent.width
@@ -379,18 +369,14 @@ Panel {
                 width: content.width
                 implicitHeight: Math.max(quarantineName.implicitHeight, releaseButton.implicitHeight)
                 readonly property var row: root.service.quarantine[index]
-                Text {
+                ElidedText {
                   id: quarantineName
                   anchors.left: parent.left
                   anchors.right: releaseButton.left
                   anchors.rightMargin: Style.space(8)
                   anchors.verticalCenter: parent.verticalCenter
-                  textFormat: Text.PlainText
+                  fontSize: Style.font.bodySmall
                   text: row ? String(row.relPath || row.nodeUid || row.id) : ""
-                  color: root.barForeground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  elide: Text.ElideMiddle
                 }
                 PanelActionButton {
                   id: releaseButton
@@ -427,10 +413,14 @@ Panel {
                 onClicked: root.service.openExternal(root.service.doctor.localRoot)
               }
               ActionButton {
+                id: detailsButton
                 visible: root.service && root.service.doctor && root.service.doctor.detailUrl
                 width: parent.each
                 text: "Open details"
                 iconText: "󰖟"
+                // The default icon size is the title size, which makes this
+                // button taller than its neighbors and pushes the label out.
+                iconSize: Style.font.body
                 onClicked: root.service.openExternal(root.service.doctor.detailUrl)
               }
               ActionButton {
@@ -496,11 +486,31 @@ Panel {
     wrapMode: Text.WrapAnywhere
   }
 
+  // One line that ellipsizes, and a hover tooltip with the full string
+  // once it no longer fits. The tooltip is the shell's PanelToolTip.
+  component ElidedText: Text {
+    id: line
+    property real fontSize: Style.font.body
+    textFormat: Text.PlainText
+    color: root.barForeground
+    font.family: root.fontFamily
+    font.pixelSize: fontSize
+    elide: Text.ElideMiddle
+    HoverHandler { id: lineHover }
+    PanelToolTip {
+      visible: lineHover.hovered && line.truncated
+      text: line.text
+      fontFamily: root.fontFamily
+    }
+  }
+
   component InfoPair: Item {
+    id: pair
     property string label: ""
     property string value: ""
     width: parent ? parent.width : implicitWidth
     implicitHeight: Math.max(pairLabel.implicitHeight, pairValue.implicitHeight)
+    HoverHandler { id: pairHover }
     Text {
       id: pairLabel
       anchors.left: parent.left
@@ -525,6 +535,11 @@ Panel {
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall
       elide: Text.ElideRight
+    }
+    PanelToolTip {
+      visible: pairHover.hovered && pairValue.truncated
+      text: pair.label !== "" ? pair.label + ": " + pair.value : pair.value
+      fontFamily: root.fontFamily
     }
   }
 }

@@ -56,6 +56,14 @@ describe('shell sources', () => {
     expect(panel).not.toContain('root.service.conflicts.length');
   });
 
+  it('shows the full text in a tooltip when a line is cut off', () => {
+    expect(panel).toContain('component ElidedText');
+    expect(panel).toContain('visible: lineHover.hovered && line.truncated');
+    expect(panel).toContain('visible: pairHover.hovered && pairValue.truncated');
+    expect(panel).toContain('Style.space(440)');
+    expect(panel).toContain('iconSize: Style.font.body');
+  });
+
   it('shows the installed engine version without putting it on the chip', () => {
     const openRow = panel.indexOf('text: "Open config"');
     const version = panel.indexOf('text: "Version " + root.service.doctor.version');
