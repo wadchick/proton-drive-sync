@@ -108,6 +108,25 @@ describe('CLI', () => {
     await expect(dispatch(deps, parseCli(['login', '--password']))).rejects.toThrow(/invalid_credentials/);
   });
 
+  it('password login passes the password as typed and trims the two-factor code', async () => {
+    deps = makeDeps();
+    const seen: string[] = [];
+    const base = await deps.createRuntime();
+    deps.createRuntime = () => Promise.resolve({
+      ...base,
+      auth: {
+        ...base.auth,
+        loginViaPassword: async (_user: string, password: string, second?: () => Promise<string>) => {
+          seen.push(password, second === undefined ? '' : await second());
+          return {};
+        },
+      },
+    });
+    deps.prompt = (q) => Promise.resolve(q.startsWith('Password') ? '  pass word  ' : q.startsWith('Two') ? ' 123456 ' : 'user@example.test');
+    expect(await dispatch(deps, parseCli(['login', '--password']))).toBe(0);
+    expect(seen).toEqual(['  pass word  ', '123456']);
+  });
+
   it('setup requires login, validates arguments, and records the pair', async () => {
     await expect(cli('setup', root, '/my-files/Sync')).rejects.toThrow(/not logged in/);
     loggedIn = true;

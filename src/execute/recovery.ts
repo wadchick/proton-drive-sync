@@ -9,17 +9,19 @@
  * Entries still 'planned' were never started: abandoned.
  * Leftover temporary download files are removed (they are ours).
  */
-import { readdirSync, statSync, type Stats } from 'node:fs';
+import { lstatSync, readdirSync, statSync, type Stats } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import path from 'node:path';
 
+import { INTERNAL_DIR_NAME } from '../config/paths.js';
+import { assertWritableInsideRoot, UnsafePathError } from '../safety/pathGuard.js';
 import type { BaselineRow } from '../state/baseline.ts';
 import type { JournalEntry } from '../state/journal.js';
 import { ConflictRepo } from '../state/misc.js';
 import type { LocalFingerprint, Operation, OperationKind } from '../reconcile/types.js';
 import type { RemoteNode } from '../remote/interface.js';
 import { sha1File } from '../remote/transfer.js';
-import { tempDir } from './localWrite.js';
+import { TEMP_FILE_PREFIX, tempDir } from './localWrite.js';
 import type { ExecutorContext } from './types.js';
 
 export interface RecoveryReport {
@@ -36,18 +38,34 @@ function nameOf(p: string): string {
   return i === -1 ? p : p.slice(i + 1);
 }
 
+/**
+ * Remove our own temp files from interrupted downloads. Only from the real temp folder
+ * inside the root: if the internal or temp folder is a symlink, what it points to is not
+ * ours, and nothing there is touched. Returns how many files were removed.
+ */
+async function removeLeftoverTempFiles(ctx: ExecutorContext): Promise<number> {
+  const dir = tempDir(ctx.root);
+  try {
+    assertWritableInsideRoot(ctx.root, `${INTERNAL_DIR_NAME}/tmp/${TEMP_FILE_PREFIX}`);
+    if (!lstatSync(dir).isDirectory()) return 0;
+  } catch (error) {
+    if (error instanceof UnsafePathError) ctx.audit.append({ kind: 'safety', op: 'temp_cleanup', message: `left the temp folder alone: ${error.message}`, outcome: 'skipped' });
+    return 0; // no temp folder yet, or not one we may clean
+  }
+  let removed = 0;
+  // Dirent types come from lstat: a symlinked entry is never a file here, and is left alone.
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.startsWith(TEMP_FILE_PREFIX)) continue;
+    await unlink(path.join(dir, entry.name));
+    removed++;
+  }
+  return removed;
+}
+
 export async function recoverJournal(ctx: ExecutorContext): Promise<RecoveryReport> {
   const report: RecoveryReport = { completed: 0, failed: 0, abandoned: 0, tempFilesRemoved: 0 };
 
-  // Our own temp files from interrupted downloads.
-  try {
-    for (const f of readdirSync(tempDir(ctx.root))) {
-      await unlink(path.join(tempDir(ctx.root), f));
-      report.tempFilesRemoved++;
-    }
-  } catch {
-    // no temp dir yet
-  }
+  report.tempFilesRemoved = await removeLeftoverTempFiles(ctx);
 
   for (const entry of ctx.journal.unresolved()) {
     // Conflict handling journals its local rename with its own entry kind.
@@ -230,8 +248,8 @@ async function inspect(ctx: ExecutorContext, op: Operation): Promise<Verdict> {
       if (src === null && dst !== null && dst.ino === op.expectedLocal.ino) {
         const node = await remote.getNode(op.remoteUid);
         if (node === null) return { kind: 'abandoned', note: 'moved locally but the remote node is gone' };
-        const old = ctx.baseline.byPath(op.from);
-        return { kind: 'completed', upserts: [row(ctx, op.to, dst.isDirectory() ? 'dir' : 'file', node, old?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.from, to: op.to }], note: 'local move already done' };
+        const old = ctx.baseline.byPath(op.baselineFrom ?? op.from);
+        return { kind: 'completed', upserts: [row(ctx, op.to, dst.isDirectory() ? 'dir' : 'file', node, old?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.baselineFrom ?? op.from, to: op.to }], note: 'local move already done' };
       }
       return { kind: 'abandoned', note: 'neither the source nor the expected destination is in the planned state' };
     }
@@ -241,10 +259,10 @@ async function inspect(ctx: ExecutorContext, op: Operation): Promise<Verdict> {
       const parentRow = op.to.includes('/') ? ctx.baseline.byPath(op.to.slice(0, op.to.lastIndexOf('/'))) : null;
       const targetParent = op.to.includes('/') ? parentRow?.nodeUid : ctx.remoteRootUid;
       if (targetParent !== undefined && node.parentUid === targetParent && node.name === nameOf(op.to)) {
-        const old = ctx.baseline.byPath(op.from);
+        const old = ctx.baseline.byPath(op.baselineFrom ?? op.from);
         const local = localExists(ctx, op.to);
         if (local === null) return { kind: 'abandoned', note: 'remote moved but the local item is not at the destination' };
-        return { kind: 'completed', upserts: [row(ctx, op.to, node.type === 'folder' ? 'dir' : 'file', node, old?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.from, to: op.to }], note: 'remote move already done' };
+        return { kind: 'completed', upserts: [row(ctx, op.to, node.type === 'folder' ? 'dir' : 'file', node, old?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.baselineFrom ?? op.from, to: op.to }], note: 'remote move already done' };
       }
       return { kind: 'failed', note: 'remote move not performed; replanned' };
     }

@@ -16,6 +16,15 @@ describe('shell sources', () => {
     expect(service).not.toContain('sudo');
   });
 
+  it('runs long engine actions in their own process, so pause and polling never wait behind a sync', () => {
+    // sync-now answers only after a whole cycle; pause must not queue behind it.
+    expect(service).toContain('readonly property var longKinds: ["sync", "held", "resolve"]');
+    expect(service).toMatch(/id: longCli[\s\S]*root\.handle\(root\.longKind/);
+    expect(service).toContain('function pause() { root.enqueue(["pause", "--json"], "pause") }');
+    expect(service).toContain('function resume() { root.enqueue(["resume", "--json"], "resume") }');
+    expect(service).toContain('function syncNow() { root.enqueue(["sync-now", "--json"], "sync") }');
+  });
+
   it('the bar widget has no process of its own and names the built-in bar', () => {
     expect(bar).not.toMatch(/\bProcess\b/);
     expect(bar).not.toMatch(/"run"|'run'/);
