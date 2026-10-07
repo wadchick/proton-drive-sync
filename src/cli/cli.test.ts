@@ -255,8 +255,14 @@ describe('CLI', () => {
     expect(parsed['localRoot']).toBeNull();
     expect(parsed['remoteRoot']).toBeNull();
     expect(parsed['configFile']).toBeNull();
+    const pkgVersion = (JSON.parse(readFileSync(path.resolve(import.meta.dirname, '../../package.json'), 'utf8')) as { version: string }).version;
+    expect(parsed['version']).toBe(pkgVersion);
     expect(stdout.join('\n')).not.toContain(secret);
     expect(parsed).not.toHaveProperty('session');
+
+    stdout = [];
+    expect(await dispatch(deps, parseCli(['doctor']))).toBe(0);
+    expect(stdout.join('\n')).toContain(`Version: ${pkgVersion}`);
 
     const input = {
       nodeOk: true,
@@ -267,12 +273,15 @@ describe('CLI', () => {
       remoteRoot: null,
       configFile: null,
       detailUrl: null,
+      version: '9.9.9',
       session: secret,
     };
     const leaked = doctorReport(input);
     expect(JSON.stringify(leaked)).not.toContain(secret);
     expect(leaked.loggedIn).toBe(false);
     expect(leaked.configFile).toBeNull();
+    expect(leaked.version).toBe('9.9.9');
+    expect(leaked).not.toHaveProperty('session');
 
     deps = makeDeps();
     deps.sessionPresent = () => Promise.resolve(false);
