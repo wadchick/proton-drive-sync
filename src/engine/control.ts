@@ -29,6 +29,7 @@ export type ControlCommand =
   | { cmd: 'release'; args: { id: number } }
   | { cmd: 'recycle' }
   | { cmd: 'details' }
+  | { cmd: 'reload_session' }
   | { cmd: 'quit' };
 
 export interface ControlTarget {
@@ -45,6 +46,8 @@ export interface ControlTarget {
   listRecycle(): RecycledItem[];
   quit(): Promise<void>;
   onStatus(listener: (status: EngineStatus) => void): () => void;
+  /** Re-read the stored session after a login or logout in another process. */
+  reloadSession?: () => Promise<void>;
   /** Loopback details page for this process, when `run` has bound one. */
   detailUrl?: () => string | null;
 }
@@ -181,6 +184,9 @@ export class ControlServer {
         return this.target.listRecycle();
       case 'details':
         return { url: this.target.detailUrl?.() ?? null };
+      case 'reload_session':
+        await this.target.reloadSession?.();
+        return this.target.getStatus();
       case 'quit':
         setTimeout(() => void this.target.quit(), 10);
         return { quitting: true };

@@ -48,6 +48,23 @@ describe('shell sources', () => {
     expect(config).toBeGreaterThan(details);
   });
 
+  it('shows a few conflicts and links to the details page for the rest, opening nothing by itself', () => {
+    expect(panel).toContain('readonly property int listLimit: 4');
+    expect(panel).toContain('model: Math.min(root.conflicts.length, root.listLimit)');
+    expect(panel).toContain('MoreLink { total: root.conflicts.length }');
+    // The overflow link opens the details page only when clicked.
+    const more = /component MoreLink: Button \{[\s\S]*?\n {2}\}/.exec(panel)?.[0] ?? '';
+    expect(more).toContain('" more in details"');
+    expect(more).toContain('onClicked: root.openDetails()');
+    expect(panel.match(/openExternal\(root\.doctor\.detailUrl\)/g), 'the details page opens from one place').toHaveLength(1);
+    expect(panel).not.toMatch(/on[A-Z]\w*Changed:[^\n]*openDetails/);
+    expect(panel).not.toContain('root.service.conflicts.length');
+  });
+
+  // Upstream's cut-off tooltips (9cc3838) were written for the previous panel. The redesigned
+  // panel also cuts text (file names, paths) and still needs the same tooltips before its PR.
+  it.todo('shows the full text in a tooltip when a line is cut off (redesigned panel)');
+
   it('shows the installed engine version without putting it on the chip', () => {
     const openRow = panel.indexOf('text: "Open config"');
     const version = panel.indexOf('text: "Version " + root.service.doctor.version');

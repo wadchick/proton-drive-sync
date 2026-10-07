@@ -1,6 +1,6 @@
 # Proton Drive Sync
 
-![The Proton Drive Sync details page while a file uploads](proton-drive-1080p.gif)
+![The Proton Drive Sync details page and bar panel during a sync](proton-drive-1080p.png)
 
 Use Proton Drive Sync to keep a folder on your machine in sync with a folder in Proton Drive. When you create, edit, rename, or move a file on either side, the other side follows. If you delete a file, it is not erased: on your machine it goes to a recycle folder, and in Proton Drive it goes to Trash. A large delete or replace waits for you. If both sides change the same file, you keep both copies.
 

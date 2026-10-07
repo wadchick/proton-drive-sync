@@ -219,6 +219,11 @@ export class ConflictHandler {
   async resolve(id: number, choice: Resolution, run: (ops: Operation[]) => Promise<boolean>): Promise<Operation[]> {
     const entry = this.ctx.conflicts.get(id);
     if (entry.resolvedAt !== null) throw new Error(`Conflict ${String(id)} is already resolved`);
+    // The deleted side was already re-created from the edit when the conflict was recorded; there
+    // is no other version to choose, so only keep_both (acknowledge and close) applies.
+    if (entry.kind === 'delete_vs_edit' && choice !== 'keep_both') {
+      throw new ResolutionError(`conflict ${String(id)} on ${entry.relPath}: the edited version was already kept on both sides, so there is no version to choose; use keep both to close it`);
+    }
     const ops = await this.planResolution(entry, choice);
     if (ops.length > 0 && !(await run(ops))) {
       throw new ResolutionError(`conflict ${String(id)} on ${entry.relPath} was not fully resolved (not every operation completed); it stays open, so try again`);
@@ -237,6 +242,12 @@ export class ConflictHandler {
         // The move comes first: without it, removing the original would leave neither version
         // at the original path.
         const move = await this.moveBothSides(copyPath, entry.relPath);
+        // The Proton original must be paired too: without its baseline row nothing would trash
+        // it, and the copy would be moved in beside it (a new conflict, reported as success).
+        if (entry.nodeUid !== null && this.ctx.baseline.byPath(entry.relPath) === null) {
+          const original = await this.ctx.remote.getNode(entry.nodeUid);
+          if (original !== null && !original.isTrashed) throw new ResolutionError(`the Proton version of ${entry.relPath} is not synced yet; keep local can be applied once it is`);
+        }
         ops.push(...(await this.removeBothSides(entry.relPath)));
         ops.push(...move);
       }

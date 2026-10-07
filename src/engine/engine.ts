@@ -105,18 +105,37 @@ export class SyncEngine extends EventEmitter {
     // One listener for the engine's lifetime: a session lost at any time stops sync, and a new
     // login resumes it, whether the engine started logged in or not.
     deps.session?.onChange((s) => {
-      if (s === 'needs_login') {
-        this.sessionRejected = true;
-        if (this.status.state !== 'needs_login' && this.status.state !== 'stopped') this.setStateSafely('needs_login', 'session rejected');
-        return;
-      }
-      this.sessionRejected = false;
-      if (this.stopped || this.status.state !== 'needs_login') return;
-      if (!this.startedUp) void this.start(); // which also honours a pause
-      // Logged in, but the user's pause still holds: show it again and sync nothing yet.
-      else if (this.userPaused) this.setStateSafely('paused', 'paused by user');
-      else this.trigger('logged in');
+      this.onSessionStatus(s);
     });
+  }
+
+  private onSessionStatus(s: 'logged_in' | 'needs_login'): void {
+    if (s === 'needs_login') {
+      this.sessionRejected = true;
+      // No further operation of a run in progress: it would use a session that is gone.
+      this.executor?.pause();
+      if (this.status.state !== 'needs_login' && this.status.state !== 'stopped') this.setStateSafely('needs_login', 'session rejected');
+      return;
+    }
+    this.sessionRejected = false;
+    if (this.stopped || this.status.state !== 'needs_login') return;
+    if (!this.startedUp) void this.start(); // which also honours a pause
+    // Logged in, but the user's pause still holds: show it again and sync nothing yet.
+    else if (this.userPaused) this.setStateSafely('paused', 'paused by user');
+    else this.trigger('logged in');
+  }
+
+  /**
+   * Pick up a sign-in or sign-out made by another process (the CLI's login or logout, which
+   * the panel's sign-in runs): credentials live in each process's memory, so this one re-reads
+   * the shared store.
+   */
+  async reloadSession(): Promise<void> {
+    if (this.deps.session === undefined) return;
+    const status = await this.deps.session.reload();
+    // Unchanged session status but an engine still waiting on a login (a rejection the session
+    // never recorded): the reload is the user's answer to it.
+    if (status === 'logged_in' && this.status.state === 'needs_login') this.onSessionStatus('logged_in');
   }
 
   /**
@@ -449,7 +468,7 @@ export class SyncEngine extends EventEmitter {
     const remote = this.deps.mirror.view();
     const sets = this.deps.quarantine.sets();
     // Nothing is written at or under a path the scanner did not sync (e.g. a symlink).
-    const plan = blockUnsyncableTargets(reconcile({ baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids }), snapshot.unsyncable);
+    const plan = blockUnsyncableTargets(reconcile({ baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids, ignored: this.ignoreMatcher }), snapshot.unsyncable);
     this.deps.scans.markCompleted('local', snapshot.scannedAt);
     this.status = {
       ...this.status,
@@ -481,7 +500,7 @@ export class SyncEngine extends EventEmitter {
       const base2 = new Map<string, BaselineItem>();
       for (const row of this.deps.baseline.all()) base2.set(row.relPath, baselineRowToItem(row));
       const local2 = this.withHiddenPaths(await localViewFromSnapshot(snapshot2, this.deps.digests, needDigest, this.localRootAvailable), snapshot2, base2);
-      const replanned = blockUnsyncableTargets(reconcile({ baseline: base2, local: local2, remote: this.deps.mirror.view(), quarantinedPaths: sets.paths, quarantinedUids: sets.uids }), snapshot2.unsyncable);
+      const replanned = blockUnsyncableTargets(reconcile({ baseline: base2, local: local2, remote: this.deps.mirror.view(), quarantinedPaths: sets.paths, quarantinedUids: sets.uids, ignored: this.ignoreMatcher }), snapshot2.unsyncable);
       return this.gateAndExecute(replanned);
     }
     return this.gateAndExecute(plan);
@@ -562,7 +581,7 @@ export class SyncEngine extends EventEmitter {
     this.status = { ...this.status, progress: fileTotal > 0 ? { done: 0, total: fileTotal } : null };
     this.setStateSafely('syncing');
     this.executor = new Executor(this.ctx());
-    if (this.userPaused) this.executor.pause();
+    if (this.userPaused || this.sessionRejected) this.executor.pause();
     try {
       const summary = await this.executor.execute({ operations: plan.operations, ...(options.dependent === true ? { dependent: true } : {}) });
       if (summary.stoppedEarly === 'disk_full') this.setStateSafely('error', 'disk full');

@@ -186,13 +186,14 @@ export class SyncHarness {
   async buildInput(options: { digest?: 'all' | 'engine' } = {}): Promise<ReconcileInput> {
     const baseline = new Map<string, BaselineItem>();
     for (const row of this.baseline.all()) baseline.set(row.relPath, baselineRowToItem(row));
-    const snapshot = await scanLocalTree(this.root, { ignore: createIgnoreMatcher(DEFAULTS.ignore) });
+    const ignored = createIgnoreMatcher(DEFAULTS.ignore);
+    const snapshot = await scanLocalTree(this.root, { ignore: ignored });
     const rule = options.digest === 'engine' ? (relPath: string) => needsDigest(this.baseline.byPath(relPath), snapshot.entries.get(relPath)) : () => true;
     const local = await localViewFromSnapshot(snapshot, this.digests, rule);
     const nodes = await listRemoteTree(this.fake, this.remoteRootUid);
     const remote = remoteViewFromNodes(nodes, this.remoteRootUid);
     const sets = this.quarantine.sets();
-    return { baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids };
+    return { baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids, ignored };
   }
 
   async plan(options: { digest?: 'all' | 'engine' } = {}): Promise<Plan> {

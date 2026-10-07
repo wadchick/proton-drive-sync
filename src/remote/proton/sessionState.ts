@@ -48,6 +48,21 @@ export class SessionState {
   }
 
   /**
+   * Re-read the stored session after another process signed in or out (the CLI's login and
+   * logout notify the running engine), and report the resulting status to listeners.
+   */
+  async reload(): Promise<SessionStatus> {
+    try {
+      await this.credentials.reload();
+    } finally {
+      // Also when the read failed: the credentials then dropped the session, so this reports it.
+      const next: SessionStatus = this.credentials.isLoggedIn() ? 'logged_in' : 'needs_login';
+      if (next !== this.status) this.set(next, next === 'needs_login' ? 'signed out elsewhere' : 'signed in elsewhere');
+    }
+    return this.status;
+  }
+
+  /**
    * Inspect an error from a remote call. If it means the session is no
    * longer valid, clear it and move to "needs login". Returns true when the
    * error was an auth failure.

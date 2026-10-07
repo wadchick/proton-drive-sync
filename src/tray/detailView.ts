@@ -24,7 +24,7 @@ export interface DetailData {
 export function applySnapshot(doc: Document, data: DetailData): void {
   const PAGE_SIZE = 25;
   interface SectionUi { page: number; query: string }
-  interface DetailUi { actionError: string; sections: Record<string, SectionUi> }
+  interface DetailUi { actionError: string; sections: Record<string, SectionUi>; openJson?: Record<string, boolean> }
   interface DetailWindow extends Window {
     detailNav?: (id: string, dir: number) => void;
     detailQuery?: (id: string, value: string) => void;
@@ -343,10 +343,20 @@ export function applySnapshot(doc: Document, data: DetailData): void {
     }
     return row.kind;
   };
+  // The full records, for when a summary is not enough. The page re-renders every refresh, so
+  // which disclosures are open is kept in the page's own state.
+  const jsonOf = (row: DetailData['conflicts'][number]): string => {
+    const key = String(row.id);
+    const open = ui.openJson?.[key] === true;
+    return '<details class="json"' + (open ? ' open' : '') + ' ontoggle="(document.__detailUi.openJson ??= {})[\'' + js(key) + '\'] = this.open"><summary>JSON</summary><pre>' +
+      esc(JSON.stringify({ local: row.local, remote: row.remote }, null, 2)) + '</pre></details>';
+  };
   const conflictRows = conflicts.shown.map((row) =>
-    '<tr>' + pathCell(row.relPath, '<div class="sub" title="' + esc(row.kind) + '">' + esc(happened(row)) + '</div>') +
+    '<tr>' + pathCell(row.relPath, '<div class="sub" title="' + esc(row.kind) + '">' + esc(happened(row)) + '</div>' + jsonOf(row)) +
     '<td class="nowrap">' + side(row.local, 'local', row.kind) + '</td><td class="nowrap">' + side(row.remote, 'remote', row.kind) + '</td>' +
-    '<td class="nowrap actions-cell">' + RESOLVE.map(([choice, label, svg]) =>
+    // A delete-versus-edit conflict already kept the edit on both sides: only "keep both"
+    // (acknowledge and close) applies, as in the tray menu and the bar panel.
+    '<td class="nowrap actions-cell' + (row.kind === 'delete_vs_edit' ? ' only-both' : '') + '">' + (row.kind === 'delete_vs_edit' ? RESOLVE.filter(([choice]) => choice === 'keep_both') : RESOLVE).map(([choice, label, svg]) =>
       '<button type="button" class="btn icon" title="' + label + '" aria-label="' + label + '" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'" + choice + "'})\">" + svg + '</button>').join('') +
     '</td></tr>').join('');
   paint('conflicts', 'Conflicts', conflicts.filtered === 0 ? emptyBody(conflicts) : '<table><tr><th>Name</th><th>Local</th><th>Remote</th><th>Resolve</th></tr>' + conflictRows + '</table>', conflicts,
@@ -361,7 +371,7 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   const recycle = windowOf('recycle', data.recycle, (row) => row.relPath);
   const recycleRows = recycle.shown.map((row) => {
     const iso = new Date(row.bucket).toISOString();
-    return '<tr>' + pathCell(row.relPath) + '<td class="nowrap">' + (row.size === undefined ? '--' : esc(bytes(row.size))) + '</td><td class="nowrap"><time datetime="' + esc(iso) + '">' + esc(when(row.bucket)) + '</time></td></tr>';
+    return '<tr>' + pathCell(row.relPath) + '<td class="nowrap">' + (row.size === undefined ? '--' : esc(bytes(row.size))) + '</td><td class="nowrap"><time datetime="' + esc(iso) + '" title="' + esc(iso) + '">' + esc(when(row.bucket)) + '</time></td></tr>';
   }).join('');
   paint('recycle', 'Recycled', recycle.filtered === 0 ? emptyBody(recycle) : '<table><tr><th>Name</th><th>Size</th><th>Recycled at</th></tr>' + recycleRows + '</table>', recycle,
     'Local files moved aside instead of deleted or overwritten, kept in ' + (data.roots ? data.roots.local + '/.proton-sync/recycle' : 'the sync folder under .proton-sync/recycle') + '. Copy one back to restore it.');
