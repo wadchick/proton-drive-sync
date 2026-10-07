@@ -14,6 +14,12 @@ interface ModelApi {
   chipModel(input: unknown): Chip;
   transferLine(transfer: unknown): string;
   readingLines(lines: unknown): string[];
+  heroMeta(chip: unknown, status: unknown): string;
+  ago(ms: unknown, now: number): string;
+  pendingText(pending: unknown): string;
+  happened(conflict: unknown): string;
+  canChooseSide(conflict: unknown): boolean;
+  transferPercent(transfer: unknown): string;
 }
 
 const sandbox: { ProtonDriveModel?: ModelApi } = {};
@@ -84,15 +90,45 @@ describe('bar chip model', () => {
     ]);
   });
 
-  it('the panel renders the helper under the headline and does not restate the sentences', () => {
+  it('the panel leads with the chip glance in its header, then the stats grid, without restating sentences', () => {
     const qml = readFileSync(path.resolve(import.meta.dirname, '../../omarchy/Panel.qml'), 'utf8');
-    const headline = qml.indexOf('text: root.glance');
-    const shown = qml.indexOf('model: root.reading.length');
-    expect(qml).toContain('ProtonDriveModel.readingLines');
-    expect(headline).toBeGreaterThan(-1);
-    expect(shown).toBeGreaterThan(headline);
+    const header = qml.indexOf('ProtonDriveModel.heroMeta');
+    const stats = qml.indexOf('GridLayout');
+    expect(header).toBeGreaterThan(-1);
+    expect(stats).toBeGreaterThan(header);
+    // The last-sync, last-full-sync and library readings appear as grid labels.
+    for (const label of ['"Last sync"', '"Full sync"', '"Local"', '"Proton"', '"In sync"', '"Skipped"']) expect(qml).toContain(label);
     expect(qml).not.toContain('on this computer');
-    expect(qml).not.toContain('Docs and Sheets');
+    expect(qml).not.toContain('Docs and Sheets stay');
+  });
+
+  it('heads the panel with the same glance the chip shows while a run moves', () => {
+    const quietStatus = { state: 'syncing', progress: { done: 3, total: 10 }, attention: quiet };
+    expect(model.heroMeta(null, quietStatus)).toBe('Sync (3/10)');
+    expect(model.heroMeta(null, { ...quietStatus, state: 'paused' })).toBe('Paused (3/10)');
+    expect(model.heroMeta(null, { state: 'idle', progress: null, attention: quiet })).toBe('In sync');
+    // Something waiting for the user outranks progress.
+    expect(model.heroMeta(null, { ...quietStatus, attention: { ...quiet, conflicts: 2 } })).toBe('Needs you');
+    expect(model.heroMeta({ state: 'not_configured' }, null)).toBe('Not set up');
+  });
+
+  it('formats panel times, pending work, conflicts and transfers', () => {
+    const now = 1_700_000_000_000;
+    expect(model.ago(now - 20_000, now)).toBe('Just now');
+    expect(model.ago(now - 5 * 60_000, now)).toBe('5 min ago');
+    expect(model.ago(now - 3 * 3_600_000, now)).toBe('3 h ago');
+    expect(model.ago(now - 30 * 3_600_000, now)).toBe('Yesterday');
+    expect(model.ago(now - 30 * 86_400_000, now)).toBe('');
+    expect(model.ago(Number.NaN, now)).toBe('');
+    expect(model.pendingText({ uploads: 2, downloads: 0, other: 1 })).toBe('2 up, 1 other');
+    expect(model.pendingText({ uploads: 0, downloads: 0, other: 0 })).toBe('None');
+    expect(model.happened({ kind: 'delete_vs_edit', local: { deleted: false }, remote: { deleted: true } })).toBe('Edited here, deleted on Proton');
+    // A delete-versus-edit conflict already kept the edit: only "keep both" is offered.
+    expect(model.canChooseSide({ kind: 'delete_vs_edit' })).toBe(false);
+    for (const kind of ['content', 'create_create', 'divergent_move']) expect(model.canChooseSide({ kind }), kind).toBe(true);
+    expect(model.canChooseSide(null)).toBe(true);
+    expect(model.transferPercent({ bytes: 1, total: 4 })).toBe('25%');
+    expect(model.transferPercent({ bytes: 1, total: 0 })).toBe('');
   });
 
   it('formats a transfer with direction and percent', () => {

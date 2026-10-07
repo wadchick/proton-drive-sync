@@ -120,8 +120,107 @@ function transferLine(transfer) {
   return direction + String(item.relPath || "") + pct
 }
 
+// ---- Panel presentation ---------------------------------------------------
+
+// The line under the panel title, in the shell's hero style (shown uppercase).
+var STATE_META = {
+  starting: "Starting",
+  idle: "In sync",
+  scanning: "Checking for changes",
+  syncing: "Syncing",
+  paused: "Paused",
+  offline: "Offline",
+  throttled: "Waiting to retry",
+  attention: "Needs you",
+  awaiting_confirmation: "Waiting for confirmation",
+  error: "Error",
+  needs_login: "Signed out",
+  stopped: "Stopped",
+}
+var SETUP_META = {
+  not_installed: "Engine not installed",
+  not_signed_in: "Signed out",
+  not_configured: "Not set up",
+  not_running: "Not running",
+  starting: "Starting",
+}
+
+function heroMeta(chip, status) {
+  if (status && typeof status.state === "string" && status.state.length > 0) {
+    var state = userAttention(status) || status.state
+    // A moving run reads exactly as the bar chip does, e.g. "Sync (3/10)".
+    var line = userAttention(status) ? "" : glance(status)
+    return line || STATE_META[state] || state
+  }
+  var key = chip && chip.state ? chip.state : "starting"
+  return SETUP_META[key] || STATE_META[key] || ""
+}
+
+// "Just now", "5 min ago", "3 h ago", "2 days ago"; "" for no time. Older or
+// future times fall back to the caller's own date format.
+function ago(ms, now) {
+  if (typeof ms !== "number" || !isFinite(ms)) return ""
+  var s = Math.round((now - ms) / 1000)
+  if (s < 0) return ""
+  if (s < 60) return "Just now"
+  var m = Math.floor(s / 60)
+  if (m < 60) return String(m) + " min ago"
+  var h = Math.floor(m / 60)
+  if (h < 24) return String(h) + " h ago"
+  var d = Math.floor(h / 24)
+  if (d < 7) return d === 1 ? "Yesterday" : String(d) + " days ago"
+  return ""
+}
+
+// The engine's conflict kinds in plain words, as on the details page.
+function happened(conflict) {
+  var c = conflict || {}
+  var deleted = function (v) { return v !== null && typeof v === "object" && v.deleted === true }
+  if (c.kind === "content") return "Edited on both sides"
+  if (c.kind === "divergent_move") return "Moved to different places"
+  if (c.kind === "create_create") return "Created on both sides"
+  if (c.kind === "delete_vs_edit") {
+    if (deleted(c.local)) return "Deleted here, edited on Proton"
+    if (deleted(c.remote)) return "Edited here, deleted on Proton"
+    return "Deleted on one side, edited on the other"
+  }
+  return String(c.kind || "")
+}
+
+// Whether keeping one side is a real choice. A delete-versus-edit conflict already kept the
+// edit on both sides, so only "keep both" (acknowledge and close) applies, as in the tray menu.
+function canChooseSide(conflict) {
+  return !(conflict && conflict.kind === "delete_vs_edit")
+}
+
+function pendingText(pending) {
+  var p = pending || {}
+  var up = Number(p.uploads) || 0
+  var down = Number(p.downloads) || 0
+  var other = Number(p.other) || 0
+  if (up + down + other === 0) return "None"
+  var parts = []
+  if (up > 0) parts.push(String(up) + " up")
+  if (down > 0) parts.push(String(down) + " down")
+  if (other > 0) parts.push(String(other) + " other")
+  return parts.join(", ")
+}
+
+function transferPercent(transfer) {
+  var t = transfer || {}
+  var total = Number(t.total)
+  if (!(total > 0)) return ""
+  return String(Math.round((Number(t.bytes) / total) * 100)) + "%"
+}
+
 var ProtonDriveModel = {
   chipModel: chipModel,
   transferLine: transferLine,
   readingLines: readingLines,
+  heroMeta: heroMeta,
+  ago: ago,
+  happened: happened,
+  canChooseSide: canChooseSide,
+  pendingText: pendingText,
+  transferPercent: transferPercent,
 }
