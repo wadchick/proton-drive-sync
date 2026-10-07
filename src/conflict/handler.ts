@@ -242,6 +242,12 @@ export class ConflictHandler {
         // The move comes first: without it, removing the original would leave neither version
         // at the original path.
         const move = await this.moveBothSides(copyPath, entry.relPath);
+        // The Proton original must be paired too: without its baseline row nothing would trash
+        // it, and the copy would be moved in beside it (a new conflict, reported as success).
+        if (entry.nodeUid !== null && this.ctx.baseline.byPath(entry.relPath) === null) {
+          const original = await this.ctx.remote.getNode(entry.nodeUid);
+          if (original !== null && !original.isTrashed) throw new ResolutionError(`the Proton version of ${entry.relPath} is not synced yet; keep local can be applied once it is`);
+        }
         ops.push(...(await this.removeBothSides(entry.relPath)));
         ops.push(...move);
       }
