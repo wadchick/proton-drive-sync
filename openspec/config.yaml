@@ -32,6 +32,8 @@ schema: spec-driven
 #         - Summarize the archive outcome before finishing
 
 context: |
-  Releases: every version bump (package.json + manifest.json) is committed as
-  "bump version" and tagged `vX.Y.Z` on that commit (`git tag vX.Y.Z && git push --tags`).
-  Tags show up under GitHub Releases/Tags.
+  Releases: a version bump updates ALL THREE files in one commit: package.json,
+  manifest.json, and package-lock.json (both "version" fields, lines ~3 and ~9).
+  Verify with `grep -n '"version"' package.json manifest.json package-lock.json`
+  before committing. Commit as "bump version", tag `vX.Y.Z` on that commit,
+  and push master + the tag. Never tag a bump that misses the lockfile.
