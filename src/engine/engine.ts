@@ -28,7 +28,7 @@ import type { RemoteChangeFeed } from '../remote/events.js';
 import { RemoteError } from '../remote/interface.js';
 import type { Logger } from '../remote/proton/logger.js';
 import type { SessionState } from '../remote/proton/sessionState.js';
-import type { PlanGate } from '../safety/brake.js';
+import { heldAffected, type PlanGate } from '../safety/brake.js';
 import { blockUnsyncableTargets } from '../safety/pathGuard.js';
 import type { PreflightResult } from '../safety/preflight.js';
 import type { QuarantineService } from '../safety/quarantine.js';
@@ -155,7 +155,7 @@ export class SyncEngine extends EventEmitter {
     return {
       conflicts: this.deps.conflictRepo.open().length,
       quarantined: this.deps.quarantine.open().length,
-      heldPlan: held === null ? null : { id: held.id, reason: held.verdict.reason ?? 'confirmation required', affected: held.verdict.affected.map(describeOp) },
+      heldPlan: held === null ? null : { id: held.id, reason: held.verdict.reason ?? 'confirmation required', affected: heldAffected(held).map(describeOp) },
     };
   }
 

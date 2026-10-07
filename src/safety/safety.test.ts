@@ -14,7 +14,7 @@ import { QuarantineRepo } from '../state/misc.ts';
 import { StateStore } from '../state/store.ts';
 import { FakeRemote } from '../testing/fakeRemote.js';
 import { World } from '../testing/world.js';
-import { evaluateBrake, PlanGate } from './brake.js';
+import { evaluateBrake, heldAffected, PlanGate } from './brake.js';
 import { runPreflight } from './preflight.js';
 import { QuarantineService } from './quarantine.js';
 import { RecycleBin } from './recycle.js';
@@ -236,6 +236,9 @@ describe('mass-change brake', () => {
     expect(emptyRemote.requiresConfirmation).not.toBeNull();
     const held3 = gate.evaluate(emptyRemote, 3);
     if (held3.status !== 'held') throw new Error('expected held');
+    // What is shown for it lists those withheld recycles too: they are what confirming runs.
+    expect(held3.held.verdict.affected).toEqual([]);
+    expect(heldAffected(held3.held).map((o) => o.kind)).toEqual(['recycle_local', 'recycle_local', 'recycle_local']);
     expect(gate.confirm(held3.held.id).operations.filter((o) => o.kind === 'recycle_local')).toHaveLength(3);
 
     const ops = audit.readAll().entries.map((e) => e.op);
