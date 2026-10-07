@@ -30,3 +30,8 @@ schema: spec-driven
 #     archive:
 #       guidance:
 #         - Summarize the archive outcome before finishing
+
+context: |
+  Releases: every version bump (package.json + manifest.json) is committed as
+  "bump version" and tagged `vX.Y.Z` on that commit (`git tag vX.Y.Z && git push --tags`).
+  Tags show up under GitHub Releases/Tags.
