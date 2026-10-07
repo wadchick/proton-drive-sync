@@ -346,7 +346,9 @@ export function applySnapshot(doc: Document, data: DetailData): void {
   const conflictRows = conflicts.shown.map((row) =>
     '<tr>' + pathCell(row.relPath, '<div class="sub" title="' + esc(row.kind) + '">' + esc(happened(row)) + '</div>') +
     '<td class="nowrap">' + side(row.local, 'local', row.kind) + '</td><td class="nowrap">' + side(row.remote, 'remote', row.kind) + '</td>' +
-    '<td class="nowrap actions-cell">' + RESOLVE.map(([choice, label, svg]) =>
+    // A delete-versus-edit conflict already kept the edit on both sides: only "keep both"
+    // (acknowledge and close) applies, as in the tray menu and the bar panel.
+    '<td class="nowrap actions-cell' + (row.kind === 'delete_vs_edit' ? ' only-both' : '') + '">' + (row.kind === 'delete_vs_edit' ? RESOLVE.filter(([choice]) => choice === 'keep_both') : RESOLVE).map(([choice, label, svg]) =>
       '<button type="button" class="btn icon" title="' + label + '" aria-label="' + label + '" onclick="act(\'resolve\', {id:' + String(row.id) + ", choice:'" + choice + "'})\">" + svg + '</button>').join('') +
     '</td></tr>').join('');
   paint('conflicts', 'Conflicts', conflicts.filtered === 0 ? emptyBody(conflicts) : '<table><tr><th>Name</th><th>Local</th><th>Remote</th><th>Resolve</th></tr>' + conflictRows + '</table>', conflicts,

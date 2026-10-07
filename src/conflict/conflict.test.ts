@@ -134,6 +134,23 @@ describe('delete versus edit', () => {
     h.assertBaselineConsistent();
   });
 
+  it('refuses keep local or keep remote, which would do nothing: the edit is already kept', async () => {
+    h.write('keep.txt', 'v1');
+    await h.settle();
+    await h.fake.trash([h.remotePathToUid('keep.txt') ?? '']);
+    h.write('keep.txt', 'v2 edited');
+    await settleWithConflicts();
+    const entry = new ConflictRepo(h.store).open()[0];
+    if (entry === undefined) throw new Error('no conflict');
+    for (const choice of ['keep_local', 'keep_remote'] as const) {
+      await expect(handler.resolve(entry.id, choice, run)).rejects.toThrow(ResolutionError);
+    }
+    expect(new ConflictRepo(h.store).open().map((c) => c.id), 'the entry stays open').toEqual([entry.id]);
+    expect(await handler.resolve(entry.id, 'keep_both', run)).toEqual([]);
+    expect(new ConflictRepo(h.store).open()).toEqual([]);
+    expect(h.localFiles().get('keep.txt')).toBe('v2 edited');
+  });
+
   it('deleted locally, edited remotely: the remote version is downloaded again', async () => {
     h.write('keep.txt', 'v1');
     await h.settle();
@@ -291,6 +308,28 @@ describe('a resolution closes the conflict only once it has been applied', () =>
     expect(isOpen(id)).toBe(true);
     expect(h.fake.trashedUids(), 'the original must not be trashed').toEqual([]);
     expect(h.recycledContents(), 'nor recycled locally').toEqual([]);
+  });
+
+  it('keep_local waits until the Proton original is synced too, instead of leaving it beside the copy', async () => {
+    const { id, copy } = await freshCreateCreate();
+    // Only the copy's upload runs: the remote original is not downloaded, so it has no baseline row yet.
+    const plan = await h.plan();
+    await h.execute({ ...plan, operations: plan.operations.filter((o) => o.kind === 'upload' || o.kind === 'create_remote_folder') });
+    expect(h.remotePathToUid(copy), 'the copy is synced').toBeDefined();
+    expect(h.baseline.byPath('a.txt'), 'the original is not paired yet').toBeNull();
+
+    await expect(handler.resolve(id, 'keep_local', run)).rejects.toThrow(/Proton version of a.txt is not synced yet/);
+    expect(isOpen(id)).toBe(true);
+    expect(h.fake.trashedUids()).toEqual([]);
+
+    // Once the original is synced, keep_local replaces it.
+    await settleWithConflicts();
+    await handler.resolve(id, 'keep_local', run);
+    await settleWithConflicts();
+    expect(isOpen(id)).toBe(false);
+    expect([...h.localFiles().entries()]).toEqual([['a.txt', 'local']]);
+    expect(new ConflictRepo(h.store).open()).toEqual([]);
+    sameOnBothSides();
   });
 
   it('keep_local works once the copy has synced', async () => {

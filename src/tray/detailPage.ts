@@ -450,6 +450,8 @@ td.fill { width: 100%; max-width: 0; }
 /* Action buttons sit in the middle of their row rather than at the top. */
 td.actions-cell { vertical-align: middle; }
 .actions-cell .btn + .btn { margin-left: .35rem; }
+/* A lone "keep both" sits under the other rows' keep-both icon, not under keep-local. */
+td.actions-cell.only-both { text-align: right; }
 /* Outer cells sit flush so table text lines up with headings and inputs. */
 td:first-child, th:first-child { padding-left: 0; }
 td:last-child, th:last-child { padding-right: 0; }

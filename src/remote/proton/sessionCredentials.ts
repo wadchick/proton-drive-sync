@@ -33,6 +33,8 @@ export interface SessionCredentials {
   isLoggedIn(): boolean;
   getUserKeyPassword(): string | undefined;
   load(): Promise<void>;
+  /** Re-read the stored session, replacing what this process holds, including with nothing. */
+  reload(): Promise<void>;
   setUserKeyPassword(userKeyPassword: string): Promise<void>;
   setSessionInfo(info: SessionInfo): Promise<void>;
   signOut(): Promise<void>;
@@ -107,6 +109,31 @@ export class Credentials implements SessionCredentials {
   }
   get refreshToken(): string | undefined {
     return this.sessionInfo?.refreshToken;
+  }
+
+  /**
+   * Re-read the store, which another process (the CLI's login or logout) may have changed: the
+   * stored session replaces the one in memory, and an empty or unreadable store clears it.
+   */
+  async reload(): Promise<void> {
+    let raw: string | null;
+    try {
+      raw = await this.store.get(SESSION_SECRET_NAME);
+    } catch (error) {
+      // Fail closed: the session this process holds may have been signed out elsewhere, so it is
+      // dropped (listeners stop the engine) and the read error is still reported.
+      this.cachePassword = undefined;
+      this.userKeyPassword = undefined;
+      this.sessionInfo = undefined;
+      this.notify();
+      throw error;
+    }
+    const parsed = parseStoredCredentials(raw);
+    this.cachePassword = parsed?.cachePassword;
+    this.userKeyPassword = parsed?.userKeyPassword;
+    this.sessionInfo = parsed?.session;
+    if (parsed !== null) this.registerSecrets();
+    this.notify();
   }
 
   async load(): Promise<void> {

@@ -120,11 +120,12 @@ describe('recovery and session', () => {
   });
 
   /** A real SessionState over an in-memory secret store whose deletes take time, like a keyring or file. */
-  async function realSession(): Promise<{ session: SessionState; creds: Credentials; saved: Map<string, string>; login: () => Promise<void> }> {
+  async function realSession(): Promise<{ session: SessionState; creds: Credentials; saved: Map<string, string>; login: () => Promise<void>; failReads: (fail: boolean) => void }> {
     const saved = new Map<string, string>();
+    let readsFail = false;
     const store: SecretStore = {
       kind: 'unsafe_file',
-      get: (key) => Promise.resolve(saved.get(key) ?? null),
+      get: (key) => (readsFail ? Promise.reject(new Error('Secret Service unavailable')) : Promise.resolve(saved.get(key) ?? null)),
       set: (key, value) => {
         saved.set(key, value);
         return Promise.resolve();
@@ -143,7 +144,7 @@ describe('recovery and session', () => {
     await login();
     const session = new SessionState(creds, logger);
     await session.resume();
-    return { session, creds, saved, login };
+    return { session, creds, saved, login, failReads: (fail) => { readsFail = fail; } };
   }
 
   /**
@@ -172,6 +173,98 @@ describe('recovery and session', () => {
       expect(h.remoteFiles().get('up.txt')).toBe('user content');
     });
   }
+
+  it('real session: a sign-in or sign-out in another process reaches the running engine on reload', async () => {
+    const { session, creds, saved } = await realSession();
+    await creds.signOut();
+    await session.resume();
+    expect(session.current).toBe('needs_login');
+    h.write('up.txt', 'user content');
+    await h.start({ session });
+    expect(h.bundle?.engine.getStatus().state).toBe('needs_login');
+
+    // The CLI signs in with its own Credentials over the same secret store.
+    const store: SecretStore = {
+      kind: 'unsafe_file',
+      get: (key) => Promise.resolve(saved.get(key) ?? null),
+      set: (key, value) => {
+        saved.set(key, value);
+        return Promise.resolve();
+      },
+      delete: (key) => {
+        saved.delete(key);
+        return Promise.resolve();
+      },
+    };
+    const cli = new Credentials(store, createLogger('cli', silentSink));
+    await cli.setUserKeyPassword('key-password');
+    await cli.setSessionInfo({ uid: 'user', accessToken: 'access', refreshToken: 'refresh' });
+    await h.bundle?.controlTarget.reloadSession?.();
+    await h.waitForConvergence(15_000);
+    expect(h.remoteFiles().get('up.txt')).toBe('user content');
+
+    // And signs out: the engine stops syncing.
+    await cli.signOut();
+    await h.bundle?.controlTarget.reloadSession?.();
+    expect(h.bundle?.engine.getStatus().state).toBe('needs_login');
+    h.write('later.txt', 'L');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(h.remoteFiles().has('later.txt'), 'nothing syncs after the sign-out').toBe(false);
+  });
+
+  for (const failure of ['unreadable', 'malformed'] as const) {
+    it(`real session: a sign-out elsewhere followed by an ${failure} store still stops the engine`, async () => {
+      const { session, creds, saved, failReads } = await realSession();
+      h.write('a.txt', 'A');
+      await h.start({ session });
+      await h.waitForConvergence();
+
+      // The CLI signs out in another process; then this process cannot read the store back.
+      saved.clear();
+      if (failure === 'unreadable') failReads(true);
+      else saved.set(SESSION_SECRET_NAME, '{not json');
+      await h.bundle?.controlTarget.reloadSession?.().catch(() => undefined);
+
+      expect(creds.isLoggedIn(), 'the session held in memory is dropped').toBe(false);
+      expect(session.current).toBe('needs_login');
+      expect(h.bundle?.engine.getStatus().state).toBe('needs_login');
+      h.write('after-logout.txt', 'must stay local');
+      await new Promise((r) => setTimeout(r, 400));
+      await h.bundle?.engine.syncNow();
+      expect(h.remoteFiles().has('after-logout.txt'), 'nothing syncs after the sign-out').toBe(false);
+    });
+  }
+
+  it('real session: a sign-out elsewhere stops the sync already in progress', async () => {
+    const { session, saved } = await realSession();
+    // One transfer at a time, so "started" counts exactly what ran after the sign-out.
+    h.config = { ...h.config, transfers: { ...h.config.transfers, concurrency: 1 } };
+    for (const n of ['a', 'b', 'c', 'd']) h.write(`${n}.txt`, n);
+    // Hold the first upload open until the sign-out has been picked up.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => (release = r));
+    let started = 0;
+    const upload = h.fake.uploadNewFile.bind(h.fake);
+    h.fake.uploadNewFile = async (...args) => {
+      if (++started === 1) await held;
+      return upload(...args);
+    };
+    // Startup runs the first sync, which waits on the held upload: do not await it yet.
+    const starting = h.start({ session });
+    for (let i = 0; i < 200 && started === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(started).toBe(1);
+
+    // The CLI signs out in another process, then tells the engine.
+    saved.clear();
+    await h.bundle?.controlTarget.reloadSession?.();
+    release();
+    await starting;
+    await h.waitFor(['needs_login']);
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(h.bundle?.engine.getStatus().state).toBe('needs_login');
+    expect(started, 'no further upload starts after the sign-out').toBe(1);
+  });
 
   it('real session: a login while paused returns to paused and stays paused', async () => {
     const { session, creds, login } = await realSession();

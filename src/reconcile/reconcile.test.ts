@@ -100,6 +100,79 @@ describe('reconcile', () => {
     return w;
   }
 
+  it('never brings in a remote item at an ignored path or in the internal folder', () => {
+    const w = synced();
+    w.remoteMkdir('.proton-sync');
+    w.remoteWrite('.proton-sync/planted.txt', 'X');
+    w.remoteMkdir('cache');
+    w.remoteWrite('cache/c.bin', 'C');
+    w.remoteWrite('new.txt', 'N');
+    // No ignore rules at all: the internal folder is still excluded.
+    expect(reconcile(w.input()).operations.map((o) => ('relPath' in o ? o.relPath : '')).sort()).toEqual(['cache', 'cache/c.bin', 'new.txt']);
+    const plan = reconcile(w.input({ ignored: (p) => p === 'cache' || p.startsWith('cache/') }));
+    expect(plan.operations.map((o) => ('relPath' in o ? o.relPath : ''))).toEqual(['new.txt']);
+  });
+
+  it('a child of a folder moved remotely into an ignored path is not trashed after a local delete', () => {
+    const w = synced();
+    w.localDelete('docs/a.txt');
+    w.remoteMove('docs', 'cache');
+    const plan = reconcile(w.input({ ignored: (p) => p === 'cache' || p.startsWith('cache/') }));
+    expect(plan.operations, 'nothing may follow the folder into the ignored path').toEqual([]);
+    expect(plan.blocked.filter((b) => b.reason === 'ignored_destination').map((b) => b.relPath).sort()).toEqual(['docs', 'docs/a.txt', 'docs/b.txt']);
+  });
+
+  it('a child trashed remotely inside a folder moved into an ignored path is not recycled locally', () => {
+    const w = synced();
+    w.remoteMove('docs', 'cache');
+    w.remoteTrash('cache/a.txt');
+    const plan = reconcile(w.input({ ignored: (p) => p === 'cache' || p.startsWith('cache/') }));
+    expect(plan.operations, 'the trashed child has no remote path, but its folder is now ignored').toEqual([]);
+    expect(plan.blocked.filter((b) => b.reason === 'ignored_destination').map((b) => b.relPath).sort()).toEqual(['docs', 'docs/a.txt', 'docs/b.txt']);
+  });
+
+  it('a child moved back out of a folder that went into an ignored path is followed', () => {
+    const w = synced();
+    w.remoteMove('docs', 'cache');
+    w.remoteMove('cache/a.txt', 'a.txt');
+    const plan = reconcile(w.input({ ignored: (p) => p === 'cache' || p.startsWith('cache/') }));
+    expect(plan.operations.map((o) => (o.kind === 'move_local' ? `${o.from} -> ${o.to}` : o.kind))).toEqual(['docs/a.txt -> a.txt']);
+  });
+
+  for (const destination of ['cache', '.proton-sync']) {
+    it(`a folder deleted locally after it moved remotely into ${destination} is left alone, not a conflict`, () => {
+      const w = synced();
+      w.localDelete('docs');
+      w.remoteMove('docs', destination);
+      const plan = reconcile(w.input({ ignored: (p) => p === 'cache' || p.startsWith('cache/') }));
+      expect(plan.conflicts).toEqual([]);
+      expect(plan.operations, 'no trash, and no baseline rows dropped').toEqual([]);
+      expect(plan.blocked.filter((b) => b.reason === 'ignored_destination').map((b) => b.relPath).sort()).toEqual(['docs', 'docs/a.txt', 'docs/b.txt']);
+    });
+  }
+
+  for (const destination of ['cache', '.proton-sync']) {
+    it(`a remote root holding only ${destination} content still counts as empty: local removals wait for confirmation`, () => {
+      const w = synced();
+      for (const p of ['docs/a.txt', 'docs/b.txt', 'top.txt', 'docs']) w.remoteTrash(p);
+      w.remoteMkdir(destination);
+      w.remoteWrite(`${destination}/junk.txt`, 'J');
+      const plan = reconcile(w.input({ ignored: (p) => p === 'cache' || p.startsWith('cache/') }));
+      expect(plan.requiresConfirmation).toMatch(/remote root is empty/);
+      expect(plan.operations.filter((o) => o.kind === 'recycle_local')).toEqual([]);
+      expect(plan.withheld.filter((w) => w.operation.kind === 'recycle_local')).toHaveLength(4);
+    });
+  }
+
+  it('blocks a remote move into an ignored path instead of following it locally', () => {
+    const w = synced();
+    w.remoteMkdir('cache');
+    w.remoteMove('top.txt', 'cache/top.txt');
+    const plan = reconcile(w.input({ ignored: (p) => p === 'cache' || p.startsWith('cache/') }));
+    expect(plan.operations).toEqual([]);
+    expect(plan.blocked.map((b) => [b.reason, b.relPath])).toEqual([['ignored_destination', 'top.txt']]);
+  });
+
   it('produces identical plans for identical inputs and no operations when nothing changed', () => {
     const w = synced();
     const p1 = reconcile(w.input());

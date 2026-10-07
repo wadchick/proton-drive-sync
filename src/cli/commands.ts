@@ -91,6 +91,7 @@ export async function login(deps: CommandDeps, usePassword: boolean, json: boole
       });
     }
     deps.ctx.audit.append({ kind: 'auth', message: 'login successful', outcome: 'ok' });
+    await notifyEngineOfSession(deps);
     out(deps, json, 'Login successful.', { ok: true });
     return 0;
   } catch (error) {
@@ -104,12 +105,41 @@ export async function login(deps: CommandDeps, usePassword: boolean, json: boole
   }
 }
 
+/** How long login/logout wait for a running engine to confirm it reloaded the session. */
+const SESSION_NOTIFY_TIMEOUT_MS = 2000;
+
+/**
+ * A running engine (another process) holds its own copy of the session in memory: ask it to
+ * re-read the store. Best effort, and bounded: the login or logout itself has already
+ * succeeded, so an engine that does not answer must not hold the command up.
+ */
+async function notifyEngineOfSession(deps: CommandDeps): Promise<void> {
+  const client = new ControlClient(deps.ctx.paths.controlSocket);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await client.connect(1000);
+    await Promise.race([
+      client.request({ cmd: 'reload_session' }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { reject(new Error('the running engine did not answer')); }, SESSION_NOTIFY_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    // Not running, unresponsive, or an older engine without the command: it reads the store
+    // when it starts.
+  } finally {
+    clearTimeout(timer);
+    client.close();
+  }
+}
+
 export async function logout(deps: CommandDeps, json: boolean): Promise<number> {
   const runtime = await deps.createRuntime();
   try {
     await runtime.auth.logout();
     await runtime.clearCaches();
     deps.ctx.audit.append({ kind: 'auth', message: 'logged out', outcome: 'ok' });
+    await notifyEngineOfSession(deps);
     out(deps, json, 'Logged out.', { ok: true });
     return 0;
   } finally {

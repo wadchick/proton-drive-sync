@@ -48,6 +48,22 @@ describe('shell sources', () => {
     expect(config).toBeGreaterThan(details);
   });
 
+  it('shows at most five conflicts and opens the details page for the rest', () => {
+    expect(panel).toContain('readonly property int conflictLimit: 5');
+    expect(panel).toContain('Math.min(root.conflictCount, root.conflictLimit)');
+    expect(panel).toContain('function offerDetailsForOverflow()');
+    expect(panel).toContain('more on the details page');
+    expect(panel).not.toContain('root.service.conflicts.length');
+  });
+
+  it('shows the full text in a tooltip when a line is cut off', () => {
+    expect(panel).toContain('component ElidedText');
+    expect(panel).toContain('visible: lineHover.hovered && line.truncated');
+    expect(panel).toContain('visible: pairHover.hovered && pairValue.truncated');
+    expect(panel).toContain('Style.space(440)');
+    expect(panel).toContain('iconSize: Style.font.body');
+  });
+
   it('shows the installed engine version without putting it on the chip', () => {
     const openRow = panel.indexOf('text: "Open config"');
     const version = panel.indexOf('text: "Version " + root.service.doctor.version');

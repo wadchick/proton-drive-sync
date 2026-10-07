@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SecretRegistry } from '../../audit/redact.js';
 import { RemoteError } from '../interface.js';
-import { UnsafeFileSecretStore } from '../../config/secretStore.js';
+import { UnsafeFileSecretStore, type SecretStore } from '../../config/secretStore.js';
 import { AccountApi } from './accountApi.js';
 import { ProtonApiClient } from './apiClient.js';
 import { Auth, LoginError } from './auth.js';
@@ -274,6 +274,52 @@ describe('SessionState', () => {
     for (const kind of ['connection', 'server', 'not_found', 'rate_limited', 'validation'] as const) {
       expect(isSessionRejected(new RemoteError('x', kind, false)), kind).toBe(false);
     }
+  });
+
+  it('reload picks up a sign-in and a sign-out made by another process sharing the store', async () => {
+    const mine = new Credentials(store, createLogger('t', silentSink), registry);
+    const state = new SessionState(mine, createLogger('s', silentSink));
+    expect(await state.resume()).toBe('needs_login');
+    const events: string[] = [];
+    state.onChange((s) => events.push(s));
+
+    // Another process (the CLI) signs in through its own Credentials on the same store.
+    const other = new Credentials(store, createLogger('t2', silentSink), registry);
+    await other.setUserKeyPassword('kp');
+    await other.setSessionInfo({ uid: 'u', accessToken: 'a', refreshToken: 'r' });
+    expect(other.isLoggedIn()).toBe(true);
+    expect(state.current, 'nothing is shared in memory').toBe('needs_login');
+
+    expect(await state.reload()).toBe('logged_in');
+    expect(mine.isLoggedIn()).toBe(true);
+
+    // And signs out again: reload drops the session this process still holds in memory.
+    await other.signOut();
+    expect(await state.reload()).toBe('needs_login');
+    expect(mine.isLoggedIn()).toBe(false);
+    expect(events).toEqual(['logged_in', 'needs_login']);
+    expect(requests).toHaveLength(0);
+  });
+
+  it('reload fails closed: an unreadable store drops the session held in memory, and the error is reported', async () => {
+    let readsFail = false;
+    const failing: SecretStore = {
+      kind: 'unsafe_file',
+      get: () => (readsFail ? Promise.reject(new Error('Secret Service unavailable')) : Promise.resolve(null)),
+      set: () => Promise.resolve(),
+      delete: () => Promise.resolve(),
+    };
+    const mine = new Credentials(failing, createLogger('t', silentSink), registry);
+    // Seed this process's memory as if it had loaded the session before.
+    await mine.setUserKeyPassword('kp');
+    await mine.setSessionInfo({ uid: 'u', accessToken: 'a', refreshToken: 'r' });
+    const state = new SessionState(mine, createLogger('s', silentSink));
+    expect(state.current).toBe('logged_in');
+
+    readsFail = true;
+    await expect(state.reload()).rejects.toThrow(/Secret Service unavailable/);
+    expect(mine.isLoggedIn()).toBe(false);
+    expect(state.current).toBe('needs_login');
   });
 
   it('starts logged out when nothing is stored', async () => {
