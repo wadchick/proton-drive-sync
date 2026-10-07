@@ -248,8 +248,8 @@ async function inspect(ctx: ExecutorContext, op: Operation): Promise<Verdict> {
       if (src === null && dst !== null && dst.ino === op.expectedLocal.ino) {
         const node = await remote.getNode(op.remoteUid);
         if (node === null) return { kind: 'abandoned', note: 'moved locally but the remote node is gone' };
-        const old = ctx.baseline.byPath(op.from);
-        return { kind: 'completed', upserts: [row(ctx, op.to, dst.isDirectory() ? 'dir' : 'file', node, old?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.from, to: op.to }], note: 'local move already done' };
+        const old = ctx.baseline.byPath(op.baselineFrom ?? op.from);
+        return { kind: 'completed', upserts: [row(ctx, op.to, dst.isDirectory() ? 'dir' : 'file', node, old?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.baselineFrom ?? op.from, to: op.to }], note: 'local move already done' };
       }
       return { kind: 'abandoned', note: 'neither the source nor the expected destination is in the planned state' };
     }
@@ -259,10 +259,10 @@ async function inspect(ctx: ExecutorContext, op: Operation): Promise<Verdict> {
       const parentRow = op.to.includes('/') ? ctx.baseline.byPath(op.to.slice(0, op.to.lastIndexOf('/'))) : null;
       const targetParent = op.to.includes('/') ? parentRow?.nodeUid : ctx.remoteRootUid;
       if (targetParent !== undefined && node.parentUid === targetParent && node.name === nameOf(op.to)) {
-        const old = ctx.baseline.byPath(op.from);
+        const old = ctx.baseline.byPath(op.baselineFrom ?? op.from);
         const local = localExists(ctx, op.to);
         if (local === null) return { kind: 'abandoned', note: 'remote moved but the local item is not at the destination' };
-        return { kind: 'completed', upserts: [row(ctx, op.to, node.type === 'folder' ? 'dir' : 'file', node, old?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.from, to: op.to }], note: 'remote move already done' };
+        return { kind: 'completed', upserts: [row(ctx, op.to, node.type === 'folder' ? 'dir' : 'file', node, old?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.baselineFrom ?? op.from, to: op.to }], note: 'remote move already done' };
       }
       return { kind: 'failed', note: 'remote move not performed; replanned' };
     }

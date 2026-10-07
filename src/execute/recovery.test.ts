@@ -2,11 +2,11 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, sym
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { INTERNAL_DIR_NAME } from '../config/paths.js';
 import type { Operation } from '../reconcile/types.js';
 import { ConflictRepo } from '../state/misc.js';
 import { sha1Hex } from '../testing/fakeRemote.js';
 import { SyncHarness } from '../testing/harness.js';
-import { INTERNAL_DIR_NAME } from '../config/paths.js';
 import { tempDir } from './localWrite.js';
 
 let h: SyncHarness;

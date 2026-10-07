@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { SessionState, SessionStatus } from '../remote/proton/sessionState.js';
+import type { SecretStore } from '../config/secretStore.js';
+import { createLogger, silentSink } from '../remote/proton/logger.js';
+import { Credentials, SESSION_SECRET_NAME } from '../remote/proton/sessionCredentials.js';
+import { SessionState, type SessionStatus } from '../remote/proton/sessionState.js';
 import { JournalRepo } from '../state/journal.js';
 import { EngineHarness } from '../testing/engineHarness.js';
 
@@ -114,5 +117,81 @@ describe('recovery and session', () => {
     session.login();
     await h.waitForConvergence(15_000);
     expect(h.remoteFiles().get('up.txt')).toBe('U');
+  });
+
+  /** A real SessionState over an in-memory secret store whose deletes take time, like a keyring or file. */
+  async function realSession(): Promise<{ session: SessionState; creds: Credentials; saved: Map<string, string>; login: () => Promise<void> }> {
+    const saved = new Map<string, string>();
+    const store: SecretStore = {
+      kind: 'unsafe_file',
+      get: (key) => Promise.resolve(saved.get(key) ?? null),
+      set: (key, value) => {
+        saved.set(key, value);
+        return Promise.resolve();
+      },
+      delete: (key) => new Promise((resolve) => setTimeout(() => {
+        saved.delete(key);
+        resolve();
+      }, 50)),
+    };
+    const logger = createLogger('test', silentSink);
+    const creds = new Credentials(store, logger);
+    const login = async (): Promise<void> => {
+      await creds.setUserKeyPassword('key-password');
+      await creds.setSessionInfo({ uid: 'user', accessToken: 'access', refreshToken: 'refresh' });
+    };
+    await login();
+    const session = new SessionState(creds, logger);
+    await session.resume();
+    return { session, creds, saved, login };
+  }
+
+  /**
+   * The real SessionState clears credentials asynchronously (the secret store write takes time),
+   * so the engine must not wait for it to notice the rejection: startup has to stop there.
+   */
+  for (const operation of ['list', 'upload'] as const) {
+    it(`real session: a rejected ${operation} stops sync until a new login, then resumes`, async () => {
+      const { session, creds, saved, login } = await realSession();
+      h.write('up.txt', 'user content');
+      h.fake.injectFault(operation, { kind: 'auth' });
+      await h.start({ session });
+      await h.waitFor(['needs_login']);
+      // Give the engine every chance to (wrongly) carry on.
+      await new Promise((r) => setTimeout(r, 300));
+
+      expect(h.bundle?.engine.getStatus().state).toBe('needs_login');
+      expect(session.current).toBe('needs_login');
+      expect(creds.isLoggedIn()).toBe(false);
+      expect(saved.has(SESSION_SECRET_NAME), 'the expired session is not left stored').toBe(false);
+      expect(h.remoteFiles().has('up.txt'), 'nothing syncs while login is needed').toBe(false);
+      expect(h.fake.trashedUids()).toEqual([]);
+
+      await login();
+      await h.waitForConvergence(15_000);
+      expect(h.remoteFiles().get('up.txt')).toBe('user content');
+    });
+  }
+
+  it('real session: a login while paused returns to paused and stays paused', async () => {
+    const { session, creds, login } = await realSession();
+    h.config = { ...h.config, startPaused: true };
+    h.write('up.txt', 'user content');
+    await h.start({ session });
+    expect(h.bundle?.engine.getStatus().state).toBe('paused');
+
+    await creds.signOut();
+    expect(h.bundle?.engine.getStatus().state).toBe('needs_login');
+    await login();
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(session.current).toBe('logged_in');
+    expect(h.bundle?.engine.getStatus().state, 'the pause is kept, and shown again').toBe('paused');
+    expect(h.remoteFiles().has('up.txt'), 'nothing syncs while paused').toBe(false);
+
+    // Resuming after that syncs as usual.
+    h.bundle?.engine.resume();
+    await h.waitForConvergence(15_000);
+    expect(h.remoteFiles().get('up.txt')).toBe('user content');
   });
 });
