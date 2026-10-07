@@ -189,6 +189,30 @@ describe('applySnapshot', () => {
     expect(el('act-sync').classList.contains('primary')).toBe(true);
   });
 
+  it('keeps the full JSON of a conflict on the page, and an opened one stays open across refreshes', () => {
+    fixture();
+    const data = dataFor(statusWith({ state: 'attention' }), {
+      conflicts: [{ id: 4, relPath: 'c.txt', kind: 'content', local: { size: 1, note: 'local record' }, remote: { size: 2 } }],
+    });
+    applySnapshot(document, data);
+    const details = el('conflicts').querySelector('details.json');
+    expect(details?.textContent).toContain('"note": "local record"');
+    expect(details?.textContent).toContain('"remote"');
+    expect(details?.hasAttribute('open')).toBe(false);
+    // The viewer opens it; the next refresh re-renders the table and keeps it open.
+    (document as Document & { __detailUi: { openJson?: Record<string, boolean> } }).__detailUi.openJson = { '4': true };
+    applySnapshot(document, data);
+    expect(el('conflicts').querySelector('details.json')?.hasAttribute('open')).toBe(true);
+  });
+
+  it('shows a readable recycle time with the ISO instant as its tooltip', () => {
+    fixture();
+    applySnapshot(document, dataFor(statusWith({ state: 'idle' }), { recycle: [{ bucket: 1_700_000_000_000, relPath: 'old.txt' }] }));
+    const time = el('recycle').querySelector('time');
+    expect(time?.getAttribute('title')).toBe('2023-11-14T22:13:20.000Z');
+    expect(time?.getAttribute('datetime')).toBe('2023-11-14T22:13:20.000Z');
+  });
+
   it('offers only keep both for a delete-versus-edit conflict, as the tray menu does', () => {
     fixture();
     applySnapshot(document, dataFor(statusWith({ state: 'attention' }), {

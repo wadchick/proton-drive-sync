@@ -27,6 +27,14 @@ describe('detail document version', () => {
     expect(html).not.toContain('Version');
   });
 
+  it('puts the version under the title, in the header, not at the end of the page', () => {
+    const html = detailDocument('9.9.9');
+    const title = html.indexOf('<h1>Proton Drive Sync</h1>');
+    const version = html.indexOf('Version 9.9.9');
+    expect(version).toBeGreaterThan(title);
+    expect(version).toBeLessThan(html.indexOf('</header>'));
+  });
+
   it('escapes the version in the header', () => {
     const html = detailDocument('1<2&3');
     expect(html).toContain('Version 1&lt;2&amp;3');

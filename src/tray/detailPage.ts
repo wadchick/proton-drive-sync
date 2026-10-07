@@ -231,7 +231,7 @@ export function detailDocument(version: string | null): string {
 }
 
 function renderPage(themeCss: string, icon: string, version: string | null): string {
-  const versionLine = version === null ? '' : `<p class="version">Version ${escapeHtml(version)}</p>`;
+  const versionLine = version === null ? '' : `<span class="version">Version ${escapeHtml(version)}</span>`;
   return `<!doctype html><html lang="en"${themeCss === '' ? '' : ' class="omarchy"'}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proton Drive Sync</title>
 <style>
 :root {
@@ -439,7 +439,12 @@ td.fill { width: 100%; max-width: 0; }
 .trunc-end { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nowrap { white-space: nowrap; }
 .sub { font-size: .85em; color: var(--stat-label); }
-.version { margin: 1.5rem 0 0; font-size: .85em; color: var(--muted); }
+/* The version shares the line under the title with the state, quieter than it. */
+.state-row { display: flex; align-items: baseline; gap: .9rem; }
+.version { font-size: .8em; color: var(--muted); line-height: 1; }
+details.json { margin-top: .2rem; }
+details.json summary { cursor: pointer; font-size: .8em; color: var(--muted); width: max-content; }
+details.json pre { max-height: 16rem; overflow: auto; }
 /* Icon buttons follow the shell's plain Button (the Wi-Fi panel's QR code and speed test):
    no fill or border at rest, the theme's hover/pressed states, an 18px icon (the shell's
    subtitle size x 1.5). Padding is an even 5px so the hover box sits square around the icon.
@@ -470,7 +475,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-siz
 <main class="wrap">
 <p id="connection-lost" class="banner" role="alert" hidden>Lost connection to Proton Drive Sync, so the details below may be out of date. Reopen this page from the Proton Drive panel.</p>
 <header>
-<div class="title-row"><div class="title-block"><img class="title-icon" id="title-icon" src="icon/folder" alt="" data-icon="${encodeURIComponent(icon)}"${icon === '' ? ' hidden' : ''}><div class="title-text"><h1>Proton Drive Sync</h1><span class="state" id="state"></span></div></div><div class="title-side"><button type="button" class="btn icon" id="act-sync" onclick="act('sync')" title="Sync now" aria-label="Sync now">${SYNC_ICON}</button><button type="button" role="switch" class="switch" id="sync-toggle" aria-checked="true" aria-label="Sync"><span class="knob"></span></button></div></div>
+<div class="title-row"><div class="title-block"><img class="title-icon" id="title-icon" src="icon/folder" alt="" data-icon="${encodeURIComponent(icon)}"${icon === '' ? ' hidden' : ''}><div class="title-text"><h1>Proton Drive Sync</h1><div class="state-row"><span class="state" id="state"></span>${versionLine}</div></div></div><div class="title-side"><button type="button" class="btn icon" id="act-sync" onclick="act('sync')" title="Sync now" aria-label="Sync now">${SYNC_ICON}</button><button type="button" role="switch" class="switch" id="sync-toggle" aria-checked="true" aria-label="Sync"><span class="knob"></span></button></div></div>
 <p class="status-row"><span id="glance"></span><span id="reason"></span></p>
 <p id="flags"></p>
 <div id="lines"></div>
@@ -482,7 +487,6 @@ pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-siz
 <section id="transfers"></section>
 <section id="proton-documents"></section>
 <section id="recycle"></section>
-${versionLine}
 </main>
 <script>
 ${clientScript()}
