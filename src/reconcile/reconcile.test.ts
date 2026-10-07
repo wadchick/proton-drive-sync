@@ -151,6 +151,19 @@ describe('reconcile', () => {
     });
   }
 
+  for (const destination of ['cache', '.proton-sync']) {
+    it(`a remote root holding only ${destination} content still counts as empty: local removals wait for confirmation`, () => {
+      const w = synced();
+      for (const p of ['docs/a.txt', 'docs/b.txt', 'top.txt', 'docs']) w.remoteTrash(p);
+      w.remoteMkdir(destination);
+      w.remoteWrite(`${destination}/junk.txt`, 'J');
+      const plan = reconcile(w.input({ ignored: (p) => p === 'cache' || p.startsWith('cache/') }));
+      expect(plan.requiresConfirmation).toMatch(/remote root is empty/);
+      expect(plan.operations.filter((o) => o.kind === 'recycle_local')).toEqual([]);
+      expect(plan.withheld.filter((w) => w.operation.kind === 'recycle_local')).toHaveLength(4);
+    });
+  }
+
   it('blocks a remote move into an ignored path instead of following it locally', () => {
     const w = synced();
     w.remoteMkdir('cache');

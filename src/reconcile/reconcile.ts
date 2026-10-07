@@ -318,7 +318,9 @@ export function reconcile(input: ReconcileInput): Plan {
 
   // 5. Completeness gate and first-sync protection.
   let requiresConfirmation: string | null = null;
-  const remoteEmptyButBaselineNot = resolved.paths.size === 0 && baseline.size > 0; // nothing syncable under the root
+  // Nothing syncable under the root: items outside sync scope (ignored, or in the internal folder)
+  // do not count, or a root left holding only those would let every local file be recycled.
+  const remoteEmptyButBaselineNot = ![...resolved.paths.values()].some((p) => !isExcluded(p)) && baseline.size > 0;
   const withheldReason = (op: Operation): string | null => {
     if (op.kind === 'recycle_local') {
       if (!remote.available) return 'remote unavailable';

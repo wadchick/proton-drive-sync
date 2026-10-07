@@ -120,6 +120,26 @@ describe('ignore rules apply to remote items', () => {
     });
   }
 
+  for (const destination of ['ignored', '.proton-sync']) {
+    it(`every synced file gone remotely with only ${destination} content left still asks before removing local files`, async () => {
+      h.config = { ...h.config, ignore: [...h.config.ignore, 'ignored/**'] };
+      h.write('a.txt', 'A');
+      h.write('b.txt', 'B');
+      await h.start();
+      await h.waitForConvergence();
+      await h.bundle?.dispose();
+      await h.fake.trash([h.remotePathToUid('a.txt') ?? '', h.remotePathToUid('b.txt') ?? '']);
+      const folder = h.fake.seedFolder(h.remoteRootUid, destination);
+      h.fake.seedFile(folder.uid, 'junk.txt', 'J');
+      await h.start();
+      await settle();
+
+      expect(h.localFiles().size, 'the local files stay until the user confirms').toBe(2);
+      expect(h.recycledContents()).toEqual([]);
+      expect(h.bundle?.engine.getStatus().attention.heldPlan?.reason).toMatch(/remote root is empty/);
+    });
+  }
+
   it('a synced file moved remotely into an ignored folder stays where it is locally', async () => {
     h.config = { ...h.config, ignore: [...h.config.ignore, 'ignored/**'] };
     h.write('a.txt', 'A');
