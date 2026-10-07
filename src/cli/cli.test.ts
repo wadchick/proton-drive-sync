@@ -9,7 +9,7 @@ import { loadConfigFile } from '../config/configFile.js';
 import { resolveAppPaths } from '../config/paths.js';
 import { LoginError } from '../remote/proton/auth.js';
 import { FakeRemote } from '../testing/fakeRemote.js';
-import { CliError, dispatch, doctorReport, type CommandDeps, type CommandRuntime } from './commands.js';
+import { CliError, dispatch, doctorReport, expandHome, type CommandDeps, type CommandRuntime } from './commands.js';
 import { parseCli } from './main.js';
 
 let base: string;
@@ -106,6 +106,23 @@ describe('CLI', () => {
     deps = makeDeps();
     deps.prompt = (q) => Promise.resolve(q.startsWith('Password') ? 'wrong' : 'user');
     await expect(dispatch(deps, parseCli(['login', '--password']))).rejects.toThrow(/invalid_credentials/);
+  });
+
+  it('setup expands a leading ~ to the home directory (no shell does it for the panel)', async () => {
+    loggedIn = true;
+    const fromHome = path.relative(os.homedir(), root);
+    expect(fromHome.startsWith('..'), 'the test folder lives under the home directory').toBe(false);
+    expect(await cli('setup', `~/${fromHome}`, '/my-files/Sync', '--json')).toBe(0);
+    const result = JSON.parse(stdout.at(-1) ?? '{}') as { config: { localRoot: string } };
+    expect(result.config.localRoot).toBe(root);
+  });
+
+  it('expandHome expands only a leading ~ or ~/', () => {
+    expect(expandHome('~', '/home/u')).toBe('/home/u');
+    expect(expandHome('~/Drive', '/home/u')).toBe('/home/u/Drive');
+    expect(expandHome('~other/Drive', '/home/u'), 'another user\'s home is not guessed').toBe('~other/Drive');
+    expect(expandHome('Drive/~/x', '/home/u')).toBe('Drive/~/x');
+    expect(expandHome('/abs/Drive', '/home/u')).toBe('/abs/Drive');
   });
 
   it('password login passes the password as typed and trims the two-factor code', async () => {
