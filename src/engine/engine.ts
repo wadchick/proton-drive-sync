@@ -447,7 +447,7 @@ export class SyncEngine extends EventEmitter {
     const remote = this.deps.mirror.view();
     const sets = this.deps.quarantine.sets();
     // Nothing is written at or under a path the scanner did not sync (e.g. a symlink).
-    const plan = blockUnsyncableTargets(reconcile({ baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids }), snapshot.unsyncable);
+    const plan = blockUnsyncableTargets(reconcile({ baseline, local, remote, quarantinedPaths: sets.paths, quarantinedUids: sets.uids, ignored: this.ignoreMatcher }), snapshot.unsyncable);
     this.deps.scans.markCompleted('local', snapshot.scannedAt);
     this.status = {
       ...this.status,
@@ -479,7 +479,7 @@ export class SyncEngine extends EventEmitter {
       const base2 = new Map<string, BaselineItem>();
       for (const row of this.deps.baseline.all()) base2.set(row.relPath, baselineRowToItem(row));
       const local2 = this.withHiddenPaths(await localViewFromSnapshot(snapshot2, this.deps.digests, needDigest, this.localRootAvailable), snapshot2, base2);
-      const replanned = blockUnsyncableTargets(reconcile({ baseline: base2, local: local2, remote: this.deps.mirror.view(), quarantinedPaths: sets.paths, quarantinedUids: sets.uids }), snapshot2.unsyncable);
+      const replanned = blockUnsyncableTargets(reconcile({ baseline: base2, local: local2, remote: this.deps.mirror.view(), quarantinedPaths: sets.paths, quarantinedUids: sets.uids, ignored: this.ignoreMatcher }), snapshot2.unsyncable);
       return this.gateAndExecute(replanned);
     }
     return this.gateAndExecute(plan);

@@ -11,6 +11,7 @@
  *  5. Apply the completeness gate (withhold deletes) and first-sync rules.
  *  6. Check target occupancy and order operations.
  */
+import { INTERNAL_DIR_NAME } from '../config/paths.js';
 import { classifyLocal, classifyRemote, findLocalCounterpart, sameContent, type LocalClassification, type RemoteClassification } from './classify.js';
 import { checkOccupancy } from './occupancy.js';
 import { orderOperations } from './order.js';
@@ -59,6 +60,26 @@ export function reconcile(input: ReconcileInput): Plan {
   const quarantinedPaths = input.quarantinedPaths ?? new Set<string>();
   const quarantinedUids = input.quarantinedUids ?? new Set<string>();
   const firstSync = baseline.size === 0;
+  // Out of sync scope on the remote side too: ignored paths and, always, the internal state folder.
+  const isExcluded = (p: string): boolean => p === INTERNAL_DIR_NAME || p.startsWith(`${INTERNAL_DIR_NAME}/`) || (input.ignored?.(p) ?? false);
+  /**
+   * Where a synced item now sits remotely when that is an excluded path it was moved into, else
+   * undefined. Checked by path, not by move state: a child of a moved folder is reclassified as
+   * unchanged (the move is implied by its parent), yet sits inside the excluded folder. Only an
+   * item with no remote path (trashed) falls back to the synced folders above it; a known path
+   * decides on its own, so a child moved back out of an excluded folder is still followed.
+   */
+  const excludedRemoteLocation = (base: BaselineItem, current: string | undefined): string | undefined => {
+    if (current !== undefined) return current !== base.relPath && isExcluded(current) ? current : undefined;
+    const parts = base.relPath.split('/');
+    for (let i = parts.length - 1; i > 0; i--) {
+      const ancestor = baseline.get(parts.slice(0, i).join('/'));
+      if (ancestor === undefined) continue;
+      const at = remotePath(ancestor.remote.uid);
+      if (at !== undefined && at !== ancestor.relPath && isExcluded(at)) return `${at}/${parts.slice(i).join('/')}`;
+    }
+    return undefined;
+  };
 
   // 1. Remote resolution.
   const resolved = resolveRemote(remote);
@@ -131,13 +152,21 @@ export function reconcile(input: ReconcileInput): Plan {
   // baseline descendant unchanged there, and no new items inside it. Otherwise
   // the folder is kept (delete_vs_edit conflict) and its descendants are
   // detached from the baseline so they are re-created rather than removed.
+  // Decided before anything else touches these items (the subtree guard below included): an item
+  // that now sits remotely at an excluded path is only ever blocked, never detached or a conflict.
+  const excludedAt = new Map<string, string>();
+  for (const c of classified) {
+    const at = excludedRemoteLocation(c.base, c.rc.relPath);
+    if (at !== undefined) excludedAt.set(c.base.relPath, at);
+  }
+
   const detached = new Set<string>();
   const forcedConflict = new Map<string, 'local' | 'remote'>(); // baseline dir path -> side that deleted
   const newLocalPaths = [...local.items.keys()].filter((p) => !claimedLocal.has(p));
   const newRemotePaths = [...resolved.byPath.entries()].filter(([, item]) => !claimedRemote.has(item.uid)).map(([p]) => p);
   for (const c of classified) {
     if (c.base.kind !== 'dir') continue;
-    if (detached.has(c.base.relPath)) continue;
+    if (detached.has(c.base.relPath) || excludedAt.has(c.base.relPath)) continue;
     const descendants = classified.filter((d) => isUnder(c.base.relPath, d.base.relPath));
     if (c.rc.state === 'deleted' && c.lc.state !== 'deleted') {
       const localDirPath = c.lc.item?.relPath ?? c.base.relPath;
@@ -166,6 +195,14 @@ export function reconcile(input: ReconcileInput): Plan {
   }
 
   for (const { base, lc, rc, rItem } of classified) {
+    // A remote move into an ignored path (or the internal folder) is not followed locally: the
+    // item would leave the synced tree, or land where the engine keeps its own state. Nothing in
+    // there is mirrored either, so neither are its changes or deletions.
+    const excluded = excludedAt.get(base.relPath);
+    if (excluded !== undefined) {
+      planner.block({ reason: 'ignored_destination', relPath: base.relPath, remoteUid: base.remote.uid, detail: `moved remotely to ${excluded}, which is ignored; the local item stays where it is` });
+      continue;
+    }
     if (detached.has(base.relPath)) {
       planner.add({ kind: 'remove_baseline', relPath: base.relPath, evidence: ['detached: parent folder is kept despite deletion on one side; item will be re-created'] });
       continue;
@@ -240,7 +277,7 @@ export function reconcile(input: ReconcileInput): Plan {
   }
   const newLocal = [...local.items.values()].filter((i) => !claimedLocal.has(i.relPath) && !isLocallyBlocked(i.relPath) && !isQuarantined(i.relPath, undefined)).sort((a, b) => a.relPath.localeCompare(b.relPath));
   const newRemote = [...resolved.byPath.entries()]
-    .filter(([p, item]) => !claimedRemote.has(item.uid) && !isQuarantined(p, item.uid) && p !== '')
+    .filter(([p, item]) => !claimedRemote.has(item.uid) && !isQuarantined(p, item.uid) && p !== '' && !isExcluded(p))
     .sort((a, b) => a[0].localeCompare(b[0]));
   const newRemoteByPath = new Map(newRemote);
   const handledRemote = new Set<string>();
@@ -281,7 +318,9 @@ export function reconcile(input: ReconcileInput): Plan {
 
   // 5. Completeness gate and first-sync protection.
   let requiresConfirmation: string | null = null;
-  const remoteEmptyButBaselineNot = resolved.paths.size === 0 && baseline.size > 0; // nothing syncable under the root
+  // Nothing syncable under the root: items outside sync scope (ignored, or in the internal folder)
+  // do not count, or a root left holding only those would let every local file be recycled.
+  const remoteEmptyButBaselineNot = ![...resolved.paths.values()].some((p) => !isExcluded(p)) && baseline.size > 0;
   const withheldReason = (op: Operation): string | null => {
     if (op.kind === 'recycle_local') {
       if (!remote.available) return 'remote unavailable';
