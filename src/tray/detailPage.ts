@@ -11,6 +11,7 @@ import type { AddressInfo } from 'node:net';
 import { dirname } from 'node:path';
 
 import type { ControlTarget } from '../engine/control.js';
+import { packageVersion } from '../version.js';
 import { clientScript } from './detailView.js';
 import { defaultIconRoots, omarchyColorsPath, omarchyThemeCss, readOmarchyTheme, resolveFolderIcon, type ThemeIcon } from './omarchyTheme.js';
 
@@ -104,7 +105,7 @@ export class DetailPageServer {
     const route = parts.slice(1).join('/');
     try {
       if (req.method === 'GET' && route === '') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(renderPage(this.themeCss(), this.folderIcon()?.path ?? ''));
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(renderPage(this.themeCss(), this.folderIcon()?.path ?? '', packageVersion()));
         return;
       }
       if (req.method === 'GET' && route === 'api/theme') {
@@ -224,7 +225,13 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
 const SYNC_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M13.5 6.5A5.5 5.5 0 0 0 3.4 4.3"/><path d="M2.5 9.5a5.5 5.5 0 0 0 10.1 2.2"/><path d="M3 1.6v2.9h2.9"/><path d="M13 14.4v-2.9h-2.9"/></svg>';
 
-function renderPage(themeCss: string, icon: string): string {
+/** The details page document without the theme or folder icon. A null version omits the version line. */
+export function detailDocument(version: string | null): string {
+  return renderPage('', '', version);
+}
+
+function renderPage(themeCss: string, icon: string, version: string | null): string {
+  const versionLine = version === null ? '' : `<p class="version">Version ${escapeHtml(version)}</p>`;
   return `<!doctype html><html lang="en"${themeCss === '' ? '' : ' class="omarchy"'}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proton Drive Sync</title>
 <style>
 :root {
@@ -432,6 +439,7 @@ td.fill { width: 100%; max-width: 0; }
 .trunc-end { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nowrap { white-space: nowrap; }
 .sub { font-size: .85em; color: var(--stat-label); }
+.version { margin: 1.5rem 0 0; font-size: .85em; color: var(--muted); }
 /* Icon buttons follow the shell's plain Button (the Wi-Fi panel's QR code and speed test):
    no fill or border at rest, the theme's hover/pressed states, an 18px icon (the shell's
    subtitle size x 1.5). Padding is an even 5px so the hover box sits square around the icon.
@@ -472,8 +480,18 @@ pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-siz
 <section id="transfers"></section>
 <section id="proton-documents"></section>
 <section id="recycle"></section>
+${versionLine}
 </main>
 <script>
 ${clientScript()}
 </script></body></html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }

@@ -47,4 +47,13 @@ describe('shell sources', () => {
     expect(details).toBeGreaterThan(-1);
     expect(config).toBeGreaterThan(details);
   });
+
+  it('shows the installed engine version without putting it on the chip', () => {
+    const openRow = panel.indexOf('text: "Open config"');
+    const version = panel.indexOf('text: "Version " + root.service.doctor.version');
+    expect(panel).toContain('Version');
+    expect(panel).toContain('doctor.version');
+    expect(version).toBeGreaterThan(openRow);
+    expect(bar).toContain('root.chip.label');
+  });
 });

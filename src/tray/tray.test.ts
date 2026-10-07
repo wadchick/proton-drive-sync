@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { initialStatus, type EngineStatus } from '../engine/status.js';
 import type { ConflictEntry, QuarantineEntry } from '../state/misc.ts';
 import { EngineHarness } from '../testing/engineHarness.js';
-import { DetailPageServer } from './detailPage.js';
+import { DetailPageServer, detailDocument } from './detailPage.js';
+
+const pkgVersion = (JSON.parse(readFileSync(path.resolve(import.meta.dirname, '../../package.json'), 'utf8')) as { version: string }).version;
 import { buildTrayModel, indexMenu, type MenuItem } from './menuModel.js';
 import { initialTracker, notificationsFor } from './notify.js';
 import { menuOnAboutToShow } from './sni.js';
@@ -15,6 +19,25 @@ function status(over: Partial<EngineStatus>): EngineStatus {
 }
 
 const labels = (items: MenuItem[]): string[] => items.filter((i) => i.separator !== true).map((i) => i.label);
+
+describe('detail document version', () => {
+  it('omits the version line when the package version is unknown', () => {
+    const html = detailDocument(null);
+    expect(html).toContain('Proton Drive Sync');
+    expect(html).not.toContain('Version');
+  });
+
+  it('escapes the version in the header', () => {
+    const html = detailDocument('1<2&3');
+    expect(html).toContain('Version 1&lt;2&amp;3');
+    expect(html).not.toContain('Version 1<2&3');
+  });
+
+  it('does not render the version from the snapshot view', () => {
+    const source = readFileSync(new URL('./detailView.ts', import.meta.url), 'utf8');
+    expect(source).not.toContain('Version');
+  });
+});
 
 describe('tray menu model', () => {
   it('maps every engine state to an icon and an SNI status', () => {
@@ -165,7 +188,10 @@ describe('detail page and tray lifecycle', () => {
     try {
       const html = await fetch(page.url);
       expect(html.status).toBe(200);
-      expect(await html.text()).toContain('Proton Drive Sync');
+      const body = await html.text();
+      const titleAt = body.indexOf('Proton Drive Sync');
+      expect(titleAt).toBeGreaterThan(-1);
+      expect(body.indexOf(`Version ${pkgVersion}`)).toBeGreaterThan(titleAt);
       const state = (await (await fetch(`${page.url}api/state`)).json()) as { status: EngineStatus; conflicts: unknown[]; quarantine: unknown[] };
       expect(state.status.state).toBe('idle');
       expect(state.conflicts).toEqual([]);

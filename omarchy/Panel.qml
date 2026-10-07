@@ -344,6 +344,13 @@ Panel {
             MouseArea { anchors.fill: parent; onClicked: root.service.openExternal(root.service.doctor.configFile) }
           }
         }
+
+        Text {
+          visible: root.service && root.service.doctor && root.service.doctor.version
+          text: "Version " + root.service.doctor.version
+          color: root.barForeground
+          font.pixelSize: Style.font.bodySmall
+        }
       }
     }
   }
