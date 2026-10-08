@@ -46,6 +46,7 @@ describe('engine state machine', () => {
     expect(s.lastRunFilesCopied).toBeNull();
     expect(s.lastFullSyncAt).toBeNull();
     expect(s.protonDocumentPaths).toEqual([]);
+    expect(s.protonDocumentModifiedAt).toEqual({});
     expect(s.counts).toEqual(counts());
     expect(s.counts.baseline).toBe(s.counts.pairedFiles + s.counts.pairedFolders);
   });

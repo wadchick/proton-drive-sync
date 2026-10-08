@@ -75,6 +75,8 @@ export interface EngineStatus {
   counts: LibraryCounts;
   /** Relative paths of Proton documents, sorted. */
   protonDocumentPaths: string[];
+  /** Last modified time (ms) of each Proton document, keyed by its relative path. */
+  protonDocumentModifiedAt: Record<string, number>;
   /** Short human-readable lines for the tray tooltip. */
   summaryLines: string[];
 }
@@ -164,6 +166,7 @@ export function initialStatus(dryRun: boolean, now: number): EngineStatus {
     attention: { conflicts: 0, quarantined: 0, heldPlan: null },
     counts: { ...EMPTY_COUNTS },
     protonDocumentPaths: [],
+    protonDocumentModifiedAt: {},
     summaryLines: ['Starting'],
   };
 }

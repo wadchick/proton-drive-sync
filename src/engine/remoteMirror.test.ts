@@ -20,6 +20,29 @@ function seedTree(): { fake: FakeRemote; root: string } {
   return { fake, root };
 }
 
+describe('RemoteMirror modifiedAt', () => {
+  it('reports when a known item last changed, and nothing for an unknown one', async () => {
+    const { fake, root } = seedTree();
+    const dated = fake.seedFile(root, 'dated.txt', 'D', { modifiedAt: new Date(1_700_000_000_000) });
+    const mirror = new RemoteMirror(fake, root, () => 1000);
+    await mirror.fullRefresh();
+    expect(mirror.modifiedAt(dated.uid)).toBe((dated.claimedModifiedAt ?? dated.serverModifiedAt).getTime());
+    expect(mirror.modifiedAt(dated.uid)).toBeGreaterThan(0);
+    expect(mirror.modifiedAt('no-such-uid')).toBeNull();
+  });
+
+  it('keeps a Proton document named like an Object member as its own entry', async () => {
+    const { fake, root } = seedTree();
+    fake.seedProtonDocument(root, '__proto__');
+    const mirror = new RemoteMirror(fake, root, () => 1000);
+    await mirror.fullRefresh();
+    const times = mirror.library().protonDocumentModifiedAt;
+    expect(Object.keys(times)).toEqual(['__proto__']);
+    // It survives the trip to the page as a number.
+    expect(typeof (JSON.parse(JSON.stringify(times)) as Record<string, unknown>)['__proto__']).toBe('number');
+  });
+});
+
 describe('RemoteMirror completeness', () => {
   it('a fresh mirror is incomplete until a full refresh succeeds', () => {
     const { fake, root } = seedTree();
