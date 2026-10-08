@@ -31,3 +31,4 @@ None.
 - `/api/state` gains `roots`, `locale` and `version`. Two new routes serve the theme (`api/theme`) and the folder icon (`icon/folder`), behind the same run token.
 - The snapshot gains `protonDocumentModifiedAt`. Conflicts from the control target carry the remote file's current modified time. Recycle entries carry their size. `RemoteMirror` gains `modifiedAt()`.
 - The POST actions, the engine's sync rules, the tray menu, the bar, and CLI wording do not change. A Dismiss still sends `keep_both`.
+- A preview tool, `scripts/preview-detail.ts`, serves the real page with made-up data for each state, for development.

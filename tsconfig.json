@@ -29,5 +29,5 @@
       "@protontech/crypto/*": ["types/generated/protontech-crypto/*"]
     }
   },
-  "include": ["src/**/*.ts", "types/**/*.d.ts"]
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "types/**/*.d.ts"]
 }
