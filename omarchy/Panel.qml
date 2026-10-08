@@ -178,12 +178,19 @@ Panel {
           // ------------------------------------------------------ onboarding
           Note {
             visible: root.service && root.service.launcherOk !== true
-            text: "Install the engine, then come back:\n~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/scripts/install-engine --service"
+            text: "The sync engine is not installed yet. Install engine builds it outside the plugin folder, in a terminal you can watch, and starts it with your session."
+          }
+
+          ActionButton {
+            visible: root.service && root.service.launcherOk !== true
+            text: "Install engine"
+            iconText: "󰇚"
+            onClicked: root.service.installEngine()
           }
 
           Note {
             visible: root.service && root.service.launcherOk === true && root.service.chip && root.service.chip.state === "not_running"
-            text: "The engine is not running. Start it with the user service from the install command above, or run proton-drive-sync in a terminal."
+            text: "The engine is not running. Start it with systemctl --user start proton-drive-sync.service, or run proton-drive-sync in a terminal."
           }
 
           ActionButton {

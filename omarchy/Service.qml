@@ -4,7 +4,9 @@ import Quickshell.Io
 import "Model.js" as ProtonDriveModel
 
 // Headless poller for the engine that is already running. It never starts
-// that process. The bar reads this object through the shell's own service.
+// that process itself; the only setup it runs is the plugin's own installer,
+// on a click, in a terminal the user can see. The bar reads this object
+// through the shell's own service.
 Item {
   id: root
   visible: false
@@ -28,6 +30,8 @@ Item {
 
   readonly property string home: Quickshell.env("HOME") || ""
   readonly property string launcherPath: home + "/.local/bin/proton-drive-sync"
+  // The installer that ships next to this file, so the button and the README run the same script.
+  readonly property string installerPath: Qt.resolvedUrl("../scripts/install-engine").toString().replace(/^file:\/\//, "")
   readonly property var chip: ProtonDriveModel.chipModel({
     installed: launcherOk,
     doctor: doctor,
@@ -148,6 +152,12 @@ Item {
     signInProc.running = true
   }
 
+  function installEngine() {
+    if (root.launcherOk || installProc.running) return
+    installProc.command = ["omarchy-launch-tui", root.installerPath, "--service"]
+    installProc.running = true
+  }
+
   function openExternal(target) {
     if (!target) return
     // Detached: xdg-open can become the long-lived app process (a fresh
@@ -196,6 +206,11 @@ Item {
   }
 
   Process { id: signInProc }
+
+  Process {
+    id: installProc
+    onExited: function(code) { launcherFile.reload() }
+  }
 
   Timer {
     interval: root.panelOpen || (root.status && (root.status.state === "syncing" || root.status.state === "scanning")) ? 2000 : 5000

@@ -16,6 +16,14 @@ describe('shell sources', () => {
     expect(service).not.toContain('sudo');
   });
 
+  it('installs the engine from a panel click, in a visible terminal, with the shipped installer', () => {
+    expect(service).toContain('["omarchy-launch-tui", root.installerPath, "--service"]');
+    expect(service).toContain('Qt.resolvedUrl("../scripts/install-engine")');
+    expect(panel).toContain('text: "Install engine"');
+    expect(panel).toContain('onClicked: root.service.installEngine()');
+    expect(panel).not.toContain('scripts/install-engine --service');
+  });
+
   it('runs long engine actions in their own process, so pause and polling never wait behind a sync', () => {
     // sync-now answers only after a whole cycle; pause must not queue behind it.
     expect(service).toContain('readonly property var longKinds: ["sync", "held", "resolve"]');

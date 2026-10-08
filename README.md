@@ -18,13 +18,9 @@ omarchy plugin add https://github.com/zakkoo/proton-drive-sync.git --enable
 
 You get a chip on the right of the built-in bar. You need that bar. A replacement bar cannot see this plugin's service.
 
-Then install the engine once. This builds the engine outside the plugin folder and puts `proton-drive-sync` on your PATH:
+Click the chip and choose **Install engine**. A terminal opens and builds the engine outside the plugin folder, puts `proton-drive-sync` on your PATH, and starts it with your graphical session. Nothing is fetched or installed until you click.
 
-```sh
-~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/scripts/install-engine
-```
-
-To start it with your graphical session:
+The same step from a terminal, without the user service if you leave off `--service`:
 
 ```sh
 ~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/scripts/install-engine --service
