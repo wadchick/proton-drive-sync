@@ -253,7 +253,7 @@ export async function run(deps: CommandDeps, flags: { dryRun: boolean; paused: b
   }
   const engine = bundle.engine;
   throttle = (s) => { engine.onThrottle(s); };
-  const page = new DetailPageServer(bundle.controlTarget);
+  const page = new DetailPageServer(bundle.controlTarget, { roots: { local: config.localRoot, remote: config.remoteRoot } });
   try {
     await page.listen();
   } catch (error) {
