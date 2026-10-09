@@ -25,7 +25,7 @@ The image supplied as `plugin-card-proton-drive-client-tool.png` SHALL be moved 
 - **THEN** the only root preview file is `preview.png` and it is the supplied card
 
 ### Requirement: License and dependency notice
-The repository root SHALL contain an MIT `LICENSE` whose copyright holder is zakko. The existing Proton copyright notice under the adapted Proton code SHALL remain. The README SHALL name the external dependencies required to build and run the engine, including Node.js 24 or newer, a Secret Service, `@protontech/drive-sdk`, `@protontech/crypto`, and `@parcel/watcher`, and SHALL state that the plugin is an unofficial integration not affiliated with Proton AG or the Omarchy project.
+The repository root SHALL contain an MIT `LICENSE` whose copyright holder is zakko. The existing Proton copyright notice under the adapted Proton code SHALL remain. The README SHALL name the external dependencies required to build and run the engine, including Node.js 24 or newer, a Secret Service, `@protontech/drive-sdk`, `@protontech/crypto`, `dbus-next`, and `picomatch`, bundled into the committed engine, and SHALL state that the plugin is an unofficial integration not affiliated with Proton AG or the Omarchy project.
 
 #### Scenario: A reader looks up the license
 - **WHEN** someone opens the repository root
@@ -37,11 +37,11 @@ The root README SHALL be the user guide. It SHALL be written in the second perso
 - `omarchy plugin add https://github.com/zakkoo/proton-drive-client-tool.git --enable`
 - `omarchy plugin remove io.github.zakkoo.proton-drive`
 
-It SHALL also document the engine install command, the optional user-service command, and the engine removal command defined by the engine-runtime-install capability. It SHALL say, in plain language, that synced files are not deleted outright, that a large delete or replace waits for confirmation, and that both copies are kept when the two sides disagree. It SHALL state that `omarchy plugin remove` removes the shell plugin and does not delete the sync folder, the Proton session, or the tool's config. It SHALL state that plugin code runs unsandboxed with the user's privileges. It SHALL NOT instruct the user to run a package install inside the plugin checkout, to pipe a download into a shell, or to use sudo. A development section MAY follow the user guide and SHALL be shorter than the user guide.
+It SHALL state that `omarchy plugin add` is the complete install and that the engine is the committed `dist/cli/main.js`, as defined by the engine-runtime-install capability. It SHALL say, in plain language, that synced files are not deleted outright, that a large delete or replace waits for confirmation, and that both copies are kept when the two sides disagree. It SHALL state that `omarchy plugin remove` removes the shell plugin and does not delete the sync folder, the Proton session, or the tool's config. It SHALL state that plugin code runs unsandboxed with the user's privileges. It SHALL NOT instruct the user to run a package install inside the plugin checkout, to pipe a download into a shell, or to use sudo. A development section MAY follow the user guide and SHALL be shorter than the user guide.
 
 #### Scenario: New Omarchy user
 - **WHEN** an Omarchy user opens the README
-- **THEN** they can install the plugin, install the engine, sign in, choose the two folders, and remove the plugin without following a machine-specific path
+- **THEN** they can install the plugin, sign in, choose the two folders, and remove the plugin without following a machine-specific path
 
 #### Scenario: Personal walkthrough is gone
 - **WHEN** the README is read
@@ -51,7 +51,7 @@ It SHALL also document the engine install command, the optional user-service com
 The files committed in the repository, and the plugin directory after `omarchy plugin add`, SHALL contain no symlink outside `.git`. Enabling the plugin SHALL NOT create `node_modules` or any other symlink in that directory.
 
 #### Scenario: Validate after add
-- **WHEN** the plugin has been added and enabled and the engine installer has been run
+- **WHEN** the plugin has been added and enabled
 - **THEN** `omarchy plugin validate` on the plugin directory still exits 0
 
 ### Requirement: QML entry points lint
@@ -62,7 +62,7 @@ Each QML file named by `entryPoints` SHALL pass `qmllint` against the installed 
 - **THEN** it exits 0
 
 ### Requirement: Marketplace submission waits for the owner
-Preparing the package SHALL NOT change the GitHub repository's visibility and SHALL NOT open an issue on `omacom/omarchy-plugin-marketplace`. A submission draft SHALL be produced for the owner to review, using category `Productivity`, tags `bar`, `system`, and `security`, the repository root URL without a trailing slash, and the five checklist statements from the marketplace submission guide left unchecked until the owner agrees. The draft SHALL note that the engine starts only from the explicit installer, that install uses no sudo, and that the preview is the supplied Proton Drive card.
+Preparing the package SHALL NOT change the GitHub repository's visibility and SHALL NOT open an issue on `omacom/omarchy-plugin-marketplace`. A submission draft SHALL be produced for the owner to review, using category `Productivity`, tags `bar`, `system`, and `security`, the repository root URL without a trailing slash, and the five checklist statements from the marketplace submission guide left unchecked until the owner agrees. The draft SHALL note that the engine is a committed reproducible bundle started by the shell service, that install uses no sudo, and that the preview is the supplied Proton Drive card.
 
 #### Scenario: Package is ready and the owner has not confirmed
 - **WHEN** the manifest, README, license, preview, and shell files are in place and the owner has not confirmed the checklist

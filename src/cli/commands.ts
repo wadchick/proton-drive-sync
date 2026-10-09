@@ -230,7 +230,12 @@ export async function run(deps: CommandDeps, flags: { dryRun: boolean; paused: b
   if (ctx.config.dryRun && !flags.dryRun && !json) {
     deps.stderr(`Dry-run mode is enabled in ${ctx.paths.configFile} ("dryRun": true); no changes will be made until you set it to false.`);
   }
-  if (await ControlClient.probe(ctx.paths.controlSocket)) throw new CliError('another instance is already running (control socket answered)');
+  if (await ControlClient.probe(ctx.paths.controlSocket)) {
+    // Another engine owns the control socket (a terminal, or an older user unit). Step aside
+    // cleanly so a supervisor restarts only crashes, never this.
+    deps.stderr('another instance is already running (control socket answered); exiting');
+    return 0;
+  }
 
   let throttle: (state: 'throttled' | 'unthrottled') => void = () => undefined;
   const runtime = await deps.createRuntime((s) => { throttle(s); });

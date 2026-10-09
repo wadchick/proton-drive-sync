@@ -104,8 +104,8 @@ const SCENARIOS: Record<string, Scenario> = {
     title: 'Quarantined items',
     status: { ...synced, state: 'attention', attention: { conflicts: 0, quarantined: 2, heldPlan: null } },
     quarantine: [
-      { id: 1, relPath: 'Videos/holiday.mp4', nodeUid: '-00Y37Ge-g3vI9OkQjThWg~o8jmGZPmprkcW2USSLYHMw', reason: 'verification_failed', details: {}, createdAt: NOW - 90 * MIN, releasedAt: null },
-      { id: 2, relPath: 'Backups/db.sqlite', nodeUid: null, reason: 'unknown_outcome', details: {}, createdAt: NOW - 20 * MIN, releasedAt: null },
+      { id: 1, relPath: 'Videos/holiday.mp4', nodeUid: '-00Y37Ge-g3vI9OkQjThWg~o8jmGZPmprkcW2USSLYHMw', reason: 'verification_failed', details: { error: 'Downloaded content does not match the SHA-1 Proton reported', op: 'download' }, createdAt: NOW - 90 * MIN, releasedAt: null },
+      { id: 2, relPath: 'Backups/db.sqlite', nodeUid: null, reason: 'unknown_outcome', details: { journalId: 41, op: 'upload', note: 'the upload may or may not have finished' }, createdAt: NOW - 20 * MIN, releasedAt: null },
     ],
   },
   transfers: {
@@ -133,9 +133,9 @@ const SCENARIOS: Record<string, Scenario> = {
     recycle: recycled(60, 'Projects/Old'),
   },
   paused: { title: 'Paused by the user', status: { ...synced, state: 'paused', reason: 'paused by user', progress: { done: 12, total: 40 } } },
-  offline: { title: 'Offline', status: { ...synced, state: 'offline', reason: 'no network connection' } },
-  error: { title: 'Error', status: { ...synced, state: 'error', reason: 'the sync folder /home/you/Drive is missing' } },
-  login: { title: 'Sign-in required', status: { ...synced, state: 'needs_login', reason: 'the Proton session expired' } },
+  offline: { title: 'Offline', status: { ...synced, state: 'offline', reason: 'events for scope Y2xrZW5fc2NvcGU: connection failed' } },
+  error: { title: 'Error', status: { ...synced, state: 'error', reason: 'sync_root_missing: Sync root is unavailable: /home/you/Drive' } },
+  login: { title: 'Sign-in required', status: { ...synced, state: 'needs_login', reason: 'session rejected' } },
   dryrun: { title: 'Dry run with a degraded event stream', status: { ...synced, dryRun: true, degraded: true } },
   empty: { title: 'Fresh install: nothing synced yet', status: { state: 'idle' } },
   lost: { title: 'Engine goes away 6 seconds after the page opens (connection notice)', status: synced, stopAfterMs: 6000 },

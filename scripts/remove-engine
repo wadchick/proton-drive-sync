@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Remove the engine runtime, launcher, and user unit installed by install-engine.
+# Remove the engine runtime, launcher, and user unit that versions before 0.3.0 installed
+# outside the plugin folder. The engine now runs from the checkout; the service runs this
+# once at load and it is a no-op when nothing marked is left.
 # Leaves the sync folder, config, state, audit log, recycle bin, and keyring alone.
 set -euo pipefail
 

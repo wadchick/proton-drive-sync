@@ -196,6 +196,10 @@ describe('SyncEngine', () => {
     expect(status.attention.conflicts).toBe(1);
     const conflicts = h.bundle?.controlTarget.listConflicts() ?? [];
     expect(conflicts[0]?.kind).toBe('content');
+    // The control target adds the remote file's current modified time, which the record lacks.
+    const remote = conflicts[0]?.remote as Record<string, unknown> | undefined;
+    expect(typeof remote?.['mtimeMs']).toBe('number');
+    expect(remote?.['mtimeMs']).toBeGreaterThan(0);
     await h.waitForConvergence();
     expect(h.localFiles().size).toBe(2);
     await h.bundle?.engine.resolveConflict(conflicts[0]?.id ?? 0, 'keep_both');

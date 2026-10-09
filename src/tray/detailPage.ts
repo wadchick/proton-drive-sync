@@ -105,7 +105,7 @@ export class DetailPageServer {
     const route = parts.slice(1).join('/');
     try {
       if (req.method === 'GET' && route === '') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(renderPage(this.themeCss(), this.folderIcon()?.path ?? '', packageVersion()));
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(renderPage(this.themeCss(), this.folderIcon()?.path ?? ''));
         return;
       }
       if (req.method === 'GET' && route === 'api/theme') {
@@ -130,6 +130,8 @@ export class DetailPageServer {
           recycle: this.target.listRecycle().filter((r) => r.kind === 'file'),
           roots: this.roots,
           locale: this.locale,
+          // The package version of the engine process serving this page, shown in the stats.
+          version: packageVersion(),
         });
         return;
       }
@@ -226,12 +228,11 @@ const SYNC_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" s
   '<path d="M13.5 6.5A5.5 5.5 0 0 0 3.4 4.3"/><path d="M2.5 9.5a5.5 5.5 0 0 0 10.1 2.2"/><path d="M3 1.6v2.9h2.9"/><path d="M13 14.4v-2.9h-2.9"/></svg>';
 
 /** The details page document without the theme or folder icon. A null version omits the version line. */
-export function detailDocument(version: string | null): string {
-  return renderPage('', '', version);
+export function detailDocument(): string {
+  return renderPage('', '');
 }
 
-function renderPage(themeCss: string, icon: string, version: string | null): string {
-  const versionLine = version === null ? '' : `<span class="version">Version ${escapeHtml(version)}</span>`;
+function renderPage(themeCss: string, icon: string): string {
   return `<!doctype html><html lang="en"${themeCss === '' ? '' : ' class="omarchy"'}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proton Drive Sync</title>
 <style>
 :root {
@@ -244,6 +245,7 @@ function renderPage(themeCss: string, icon: string, version: string | null): str
   --pds-blue: #42aefc;
   --pds-line: #e4eaf3;
   --pds-muted: #5c6b80;
+  --pds-card: #fcfdfe;
   --page-bg: linear-gradient(90deg, var(--pds-mint), var(--pds-lavender));
   --fg: var(--pds-ink);
   --muted: var(--pds-muted);
@@ -281,7 +283,9 @@ function renderPage(themeCss: string, icon: string, version: string | null): str
   --danger-bg: #ffe8ea;
   --danger-fg: #6d2430;
   --danger-border: transparent;
-  --note-bg: #fff;
+  /* The state line's warning and error tones: amber and red that read on white. */
+  --status-warn: #9a5b00;
+  --status-danger: #c0262d;
   --radius-box: 16px;
   --radius-pill: 999px;
   --font: ui-sans-serif, system-ui, sans-serif;
@@ -315,7 +319,9 @@ html.omarchy {
   --danger-bg: color-mix(in srgb, var(--om-red, var(--om-accent)) 14%, transparent);
   --danger-fg: var(--om-foreground);
   --danger-border: var(--om-red, var(--om-accent));
-  --note-bg: color-mix(in srgb, var(--om-foreground) 8%, transparent);
+  /* The state line's warning and error tones: the theme's yellow and red. */
+  --status-warn: var(--om-yellow, var(--om-accent));
+  --status-danger: var(--om-red, var(--om-accent));
   --radius-box: 0;
   --radius-pill: 0;
   --font: monospace;
@@ -337,8 +343,15 @@ body {
 h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.02em; text-box: trim-both cap alphabetic; }
 .title-block { display: flex; align-items: flex-start; gap: .55rem; min-width: 0; }
 .title-icon { flex: none; height: var(--title-icon-h); width: auto; margin-top: var(--title-icon-y); }
-.title-text { display: flex; flex-direction: column; gap: .65rem; }
-.state { font-size: .833em; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--state-fg); line-height: 1; text-box: trim-both cap alphabetic; }
+.title-text { display: flex; flex-direction: column; gap: .65rem; min-width: 0; }
+.state { font-size: .833em; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--state-fg); line-height: 1; text-box: trim-both cap alphabetic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The state line alternates between the state and its details, fading out and back in like
+   the Wi-Fi panel's caption; warnings and errors take their own colours. */
+.state { transition: opacity 260ms ease-in; }
+.state.fading { opacity: 0; transition: opacity 180ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .state, .state.fading { transition: none; } }
+.state[data-tone="warn"] { color: var(--status-warn); }
+.state[data-tone="danger"] { color: var(--status-danger); }
 /* Sync on/off switch, drawn like the shell's ToggleSwitch: normal track when off,
    selected fill and knob when on, a hover ring around it, 120ms slide. */
 .title-side { display: flex; align-items: center; gap: .9rem; }
@@ -363,14 +376,21 @@ h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.02em; text-box: trim-both 
    measured from the letters, not the line box. */
 .section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: .6rem 1rem; margin: 0; }
 h2 { font-size: 1.05rem; margin: 0; color: var(--heading); text-transform: uppercase; text-box: trim-both cap alphabetic; }
-/* No boxes: each section sits under a divider. */
-main > section:not([hidden]) { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--divider); }
-.status-row, .actions, .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .6rem; }
-.btn, .note, .toolbar input { border-radius: var(--radius-pill); }
-#glance { font-weight: 650; color: var(--accent); }
-#reason, .empty, .muted { color: var(--muted); }
-/* The progress/reason line and the flags take no room when they have nothing to say. */
-.status-row:has(#glance:empty):has(#reason:empty), #flags:empty { display: none; }
+/* Without a theme, the header and each section are white cards on the gradient. */
+html:not(.omarchy) header, html:not(.omarchy) main > section:not([hidden]) {
+  background: var(--pds-card); border-radius: 20px; padding: 1rem 1.15rem; box-shadow: 0 10px 30px rgba(44, 51, 67, 0.08);
+}
+html:not(.omarchy) main > section:not([hidden]) { margin-top: .9rem; }
+/* The held plan's warning box is its card, rather than a box inside a white card. */
+html:not(.omarchy) main > section#held { background: none; padding: 0; box-shadow: none; }
+/* Proceed and Reject: flush right on the held plan's filter row. */
+.held-actions { margin-left: auto; }
+html:not(.omarchy) #held > .warn { border-radius: 20px; padding: 1rem 1.15rem; box-shadow: 0 10px 30px rgba(44, 51, 67, 0.08); }
+/* Omarchy, like the shell's panels: no boxes, each section sits under a divider. */
+html.omarchy main > section:not([hidden]) { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--divider); }
+.actions, .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .6rem; }
+.btn, .toolbar input { border-radius: var(--radius-pill); }
+.empty, .muted { color: var(--muted); }
 #lines:not(:empty) { margin-top: .9rem; }
 /* Stats laid out like the top of the shell's Wi-Fi panel: label/value pairs in
    two equal halves, labels dimmed, values right-aligned, small body size. */
@@ -435,16 +455,8 @@ td, th { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid var(-
 td.fill { width: 100%; max-width: 0; }
 .trunc-start { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .trunc-start bdi { direction: ltr; unicode-bidi: isolate; }
-/* Long IDs (Quarantine's node) cut at the end instead, at a fixed width. */
-.trunc-end { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nowrap { white-space: nowrap; }
 .sub { font-size: .85em; color: var(--stat-label); }
-/* The version shares the line under the title with the state, quieter than it. */
-.state-row { display: flex; align-items: baseline; gap: .9rem; }
-.version { font-size: .8em; color: var(--muted); line-height: 1; }
-details.json { margin-top: .2rem; }
-details.json summary { cursor: pointer; font-size: .8em; color: var(--muted); width: max-content; }
-details.json pre { max-height: 16rem; overflow: auto; }
 /* Icon buttons follow the shell's plain Button (the Wi-Fi panel's QR code and speed test):
    no fill or border at rest, the theme's hover/pressed states, an 18px icon (the shell's
    subtitle size x 1.5). Padding is an even 5px so the hover box sits square around the icon.
@@ -452,11 +464,14 @@ details.json pre { max-height: 16rem; overflow: auto; }
 .btn.icon { display: inline-flex; align-items: center; justify-content: center; padding: 5px; background: transparent; border-color: transparent; }
 .btn.icon svg { width: 18px; height: 18px; }
 .btn.icon:disabled { border-color: transparent; }
+/* Sync now as the call to action: filled like the other primary buttons. Without the fill its
+   icon, drawn in the primary text colour, would vanish against a dark theme's background. */
+.btn.icon.primary { background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary-fg); }
 /* Action buttons sit in the middle of their row rather than at the top. */
 td.actions-cell { vertical-align: middle; }
 .actions-cell .btn + .btn { margin-left: .35rem; }
-/* A lone "keep both" sits under the other rows' keep-both icon, not under keep-local. */
-td.actions-cell.only-both { text-align: right; }
+/* A lone row action (Dismiss, Release) sits flush right in its column. */
+td.actions-cell.end { text-align: right; }
 /* Outer cells sit flush so table text lines up with headings and inputs. */
 td:first-child, th:first-child { padding-left: 0; }
 td:last-child, th:last-child { padding-right: 0; }
@@ -467,7 +482,6 @@ td:last-child, th:last-child { padding-right: 0; }
 /* Lost connection: the notice leads the page and the data that may be stale dims. */
 #connection-lost { margin: 0 0 1.25rem; }
 body.stale .title-row, body.stale .actions, body.stale #lines, body.stale main > section { opacity: .45; }
-.note { display: inline-block; background: var(--note-bg); padding: .15rem .65rem; }
 pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-size: .85rem; }
 [hidden] { display: none !important; }
 </style>
@@ -475,9 +489,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-siz
 <main class="wrap">
 <p id="connection-lost" class="banner" role="alert" hidden>Lost connection to Proton Drive Sync, so the details below may be out of date. Reopen this page from the Proton Drive panel.</p>
 <header>
-<div class="title-row"><div class="title-block"><img class="title-icon" id="title-icon" src="icon/folder" alt="" data-icon="${encodeURIComponent(icon)}"${icon === '' ? ' hidden' : ''}><div class="title-text"><h1>Proton Drive Sync</h1><div class="state-row"><span class="state" id="state"></span>${versionLine}</div></div></div><div class="title-side"><button type="button" class="btn icon" id="act-sync" onclick="act('sync')" title="Sync now" aria-label="Sync now">${SYNC_ICON}</button><button type="button" role="switch" class="switch" id="sync-toggle" aria-checked="true" aria-label="Sync"><span class="knob"></span></button></div></div>
-<p class="status-row"><span id="glance"></span><span id="reason"></span></p>
-<p id="flags"></p>
+<div class="title-row"><div class="title-block"><img class="title-icon" id="title-icon" src="icon/folder" alt="" data-icon="${encodeURIComponent(icon)}"${icon === '' ? ' hidden' : ''}><div class="title-text"><h1>Proton Drive Sync</h1><span class="state" id="state"></span></div></div><div class="title-side"><button type="button" class="btn icon" id="act-sync" onclick="act('sync')" title="Sync now" aria-label="Sync now">${SYNC_ICON}</button><button type="button" role="switch" class="switch" id="sync-toggle" aria-checked="true" aria-label="Sync"><span class="knob"></span></button></div></div>
 <div id="lines"></div>
 </header>
 <p id="action-error" class="banner" hidden></p>
@@ -491,13 +503,4 @@ pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-siz
 <script>
 ${clientScript()}
 </script></body></html>`;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
 }

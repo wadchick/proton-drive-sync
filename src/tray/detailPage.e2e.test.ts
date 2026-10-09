@@ -61,7 +61,7 @@ describe('detail page after a sync', () => {
     const data = JSON.parse(res.body) as DetailData;
 
     document.body.innerHTML = `
-      <span id="state"></span><span id="reason"></span><span id="glance"></span>
+      <span id="state"></span>
       <div id="lines"></div><div id="proton-documents"></div><div id="held"></div>
       <div id="transfers"></div><div id="conflicts"></div>
       <div id="quarantine"></div><div id="recycle"></div>`;
@@ -91,7 +91,7 @@ describe('detail page after a sync', () => {
     // The served page carries the tested renderer, the page colors, and the library section.
     expect(ok.body).toContain('id="lines"');
     expect(ok.body).toContain('id="proton-documents"');
-    expect(ok.body).toContain('id="glance"');
+    expect(ok.body).not.toContain('id="glance"');
     expect(ok.body).toContain('id="action-error"');
     expect(ok.body).toContain('function applySnapshot');
     expect(ok.body).toContain('border-radius');
@@ -101,8 +101,34 @@ describe('detail page after a sync', () => {
     expect(ok.body).toMatch(/<img[^>]+id="title-icon"[^>]+hidden>/);
     expect((await httpGet(`${server.url}icon/folder`)).status).toBe(404);
     expect(ok.body).toContain('<style id="omarchy-theme"></style>');
-    for (const color of ['#cdfae4', '#d0d8fc', '#2c3343', '#2cd1ec', '#42aefc']) expect(ok.body).toContain(color);
+    for (const color of ['#cdfae4', '#d0d8fc', '#fcfdfe', '#2c3343', '#2cd1ec', '#42aefc']) expect(ok.body).toContain(color);
     expect(ok.body).not.toMatch(/<link[^>]+stylesheet/i);
+    // Without a theme the header and sections are white rounded cards; with one, sections sit under dividers.
+    expect(ok.body).toMatch(/html:not\(\.omarchy\) header, html:not\(\.omarchy\) main > section:not\(\[hidden\]\) \{[^}]*background: var\(--pds-card\);[^}]*border-radius: 20px;/);
+    expect(ok.body).toMatch(/html\.omarchy main > section:not\(\[hidden\]\) \{[^}]*border-top: 1px solid var\(--divider\);/);
+    expect(ok.body).not.toMatch(/(?:^|\n)main > section:not\(\[hidden\]\) \{[^}]*border-top/);
+    // The held plan's warning box is its card, not a box inside a white card.
+    expect(ok.body).toMatch(/html:not\(\.omarchy\) main > section#held \{[^}]*background: none;[^}]*padding: 0;[^}]*box-shadow: none;/);
+    expect(ok.body).toMatch(/html:not\(\.omarchy\) #held > \.warn \{[^}]*border-radius: 20px;/);
+    // A lone row action (Dismiss, Release) sits flush right in its column.
+    expect(ok.body).toContain('td.actions-cell.end { text-align: right; }');
+    // Sync now as the call to action is a filled icon button, so its icon stays visible on any theme.
+    expect(ok.body).toContain('.btn.icon.primary { background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary-fg); }');
+    // Proceed and Reject sit flush right on the filter's row.
+    expect(ok.body).toMatch(/\.held-actions \{[^}]*margin-left: auto;/);
+    // The details live in the alternating state line: no separate reason line or notes.
+    expect(ok.body).not.toContain('id="reason"');
+    expect(ok.body).not.toContain('id="flags"');
+    // It fades like the Wi-Fi panel's caption (180ms out, 260ms in), without motion if asked.
+    expect(ok.body).toContain('.state { transition: opacity 260ms ease-in; }');
+    expect(ok.body).toContain('.state.fading { opacity: 0; transition: opacity 180ms ease-out; }');
+    expect(ok.body).toMatch(/@media \(prefers-reduced-motion: reduce\) \{ \.state, \.state\.fading \{ transition: none; \} \}/);
+    // Warnings and errors take their own colours.
+    expect(ok.body).toContain('.state[data-tone="warn"] { color: var(--status-warn); }');
+    expect(ok.body).toContain('.state[data-tone="danger"] { color: var(--status-danger); }');
+    expect(ok.body).toMatch(/html\.omarchy \{[^}]*--status-warn: var\(--om-yellow, var\(--om-accent\)\);[^}]*--status-danger: var\(--om-red, var\(--om-accent\)\);/);
+    expect(ok.body).toContain('function advanceStatus');
+    expect(ok.body).toContain('setInterval(rotateStatus, 2800)');
     // Control widths may be a per-side list, which the border shorthand rejects (no border at all).
     expect(ok.body).not.toMatch(/border:\s*var\(--ctl-border-width\)/);
     expect(ok.body).not.toMatch(/<script[^>]+src=/i);

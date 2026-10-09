@@ -1,6 +1,6 @@
 /**
- * Local watcher: inotify events (via @parcel/watcher) plus periodic full
- * scans, producing debounced, settled, move-aware change batches against a
+ * Local watcher: inotify events (via Node's recursive fs.watch) plus periodic
+ * full scans, producing debounced, settled, move-aware change batches against a
  * maintained in-memory snapshot.
  *
  * Guarantees relied upon by the engine:
@@ -10,11 +10,9 @@
  *  - a vanished sync root yields one `root_unavailable` condition and no
  *    per-file deletes
  */
-import type { Stats } from 'node:fs';
+import { watch, type FSWatcher, type Stats } from 'node:fs';
 import { lstat } from 'node:fs/promises';
 import path from 'node:path';
-
-import watcher from '@parcel/watcher';
 
 import type { Logger } from '../remote/proton/logger.js';
 import { diffSnapshots, type LocalChange } from './diff.js';
@@ -46,7 +44,7 @@ export interface LocalWatcherOptions {
 
 export class LocalWatcher {
   private snapshot: LocalSnapshot | null;
-  private subscription: watcher.AsyncSubscription | null = null;
+  private subscription: FSWatcher | null = null;
   private dirty = new Set<string>();
   private debounceTimer: NodeJS.Timeout | null = null;
   private scanTimer: NodeJS.Timeout | null = null;
@@ -72,26 +70,28 @@ export class LocalWatcher {
   /** Initial full scan, then subscribe to events and start the periodic scan timer. */
   async start(): Promise<void> {
     await this.fullScan('startup');
-    this.subscription = await watcher.subscribe(
-      this.options.root,
-      (error, events) => {
-        if (error) {
-          this.options.logger.warn(`Watcher error (${error.message}); forcing a full scan`);
-          this.requestFullScan(`watcher error: ${error.message}`);
-          return;
-        }
-        for (const e of events) {
-          const rel = path.relative(this.options.root, e.path).split(path.sep).join('/');
-          if (rel === '' || rel.startsWith('..')) {
-            this.requestFullScan('event outside or at root');
-            continue;
-          }
-          if (this.options.ignore(rel)) continue;
-          this.dirty.add(rel);
-        }
-        this.armDebounce();
-      },
-    );
+    // Recursive inotify through libuv: new directories are watched as they appear. An event
+    // with no name, an error, or anything outside the root is answered with a full scan, so a
+    // lost or ambiguous event never becomes a guess.
+    const sub = watch(this.options.root, { recursive: true, persistent: false }, (_eventType, filename) => {
+      if (filename === null) {
+        this.requestFullScan('event without a path');
+        return;
+      }
+      const rel = filename.split(path.sep).join('/');
+      if (rel === '' || rel === '.' || rel.startsWith('..')) {
+        this.requestFullScan('event outside or at root');
+        return;
+      }
+      if (this.options.ignore(rel)) return;
+      this.dirty.add(rel);
+      this.armDebounce();
+    });
+    sub.on('error', (error: Error) => {
+      this.options.logger.warn(`Watcher error (${error.message}); forcing a full scan`);
+      this.requestFullScan(`watcher error: ${error.message}`);
+    });
+    this.subscription = sub;
     const interval = this.options.fullScanIntervalMs ?? 60 * 60_000;
     this.scanTimer = setInterval(() => { this.requestFullScan('periodic'); }, interval);
     this.scanTimer.unref();
@@ -101,7 +101,7 @@ export class LocalWatcher {
     this.stopped = true;
     if (this.debounceTimer !== null) clearTimeout(this.debounceTimer);
     if (this.scanTimer !== null) clearInterval(this.scanTimer);
-    await this.subscription?.unsubscribe();
+    this.subscription?.close();
     this.subscription = null;
     await this.processing;
   }

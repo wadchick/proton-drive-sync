@@ -46,7 +46,7 @@ export function parseOmarchyColors(text: string): OmarchyTheme | null {
 const ROLES = ['foreground', 'text', 'accent', 'urgent', 'background', 'transparent'];
 const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/;
 const WIDTHS = /^\d{1,2}(?: \d{1,2}){0,3}$/;
-const CONTROL_LINE = /^\s*([a-z-]+)\s*=\s*(?:"([^"]*)"|([0-9.]+))\s*(?:#.*)?$/;
+const CONTROL_LINE = /^\s*([a-z-]+)\s*=\s*(?:"([^"]*)"|(-?[0-9.]+))\s*(?:#.*)?$/;
 
 /**
  * The [controls] table of shell.toml, keeping only values the page can use

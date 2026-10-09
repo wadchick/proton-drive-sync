@@ -72,6 +72,7 @@ normal-fill-alpha   = 0.1
 normal-border       = "#ABCDEF"
 normal-border-width = 2
 normal-border-alpha = 1.5
+hover-cursor-fill-alpha = -0.5
 hover-cursor-border = "rgba(1,2,3,1) rgba(4,5,6,1) 45deg"
 hover-cursor-border-width = "1 2"
 focus-border = "hyprland.active-border"
@@ -86,6 +87,7 @@ scale = 1.0
       'normal-border': '#abcdef',
       'normal-border-width': '2',
       'normal-border-alpha': 1,
+      'hover-cursor-fill-alpha': 0,
       'hover-cursor-border-width': '1 2',
     });
   });

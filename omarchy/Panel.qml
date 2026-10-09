@@ -244,17 +244,22 @@ Panel {
           }
         }
 
-        // ---------- Before the engine runs: install, sign in, choose folders ----------
-        BodyText {
-          visible: root.service && root.service.launcherOk !== true
-          text: "Install the engine, then come back:\n~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/scripts/install-engine --service"
-          color: root.dim
-        }
-
-        BodyText {
-          visible: root.service && root.service.launcherOk === true && root.chip && root.chip.state === "not_running"
-          text: "The engine is not running. Start it with the user service from the install command, or run proton-drive-sync in a terminal."
-          color: root.dim
+        // ---------- Before the engine runs: sign in, choose folders; or it keeps stopping ----------
+        Column {
+          visible: root.service && root.chip && root.chip.state === "engine_failed"
+          width: parent.width
+          spacing: Style.space(8)
+          BodyText {
+            text: "The engine keeps stopping. Run " + root.service.launcherPath + " run in a terminal to see why, then try again."
+            color: root.dim
+          }
+          Button {
+            text: "Try again"
+            bordered: true
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onClicked: root.service.retryEngine()
+          }
         }
 
         Column {

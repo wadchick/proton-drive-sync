@@ -20,30 +20,11 @@ function status(over: Partial<EngineStatus>): EngineStatus {
 
 const labels = (items: MenuItem[]): string[] => items.filter((i) => i.separator !== true).map((i) => i.label);
 
-describe('detail document version', () => {
-  it('omits the version line when the package version is unknown', () => {
-    const html = detailDocument(null);
+describe('detail page version', () => {
+  it('leaves the version out of the served document: the live snapshot carries it', () => {
+    const html = detailDocument();
     expect(html).toContain('Proton Drive Sync');
     expect(html).not.toContain('Version');
-  });
-
-  it('puts the version under the title, in the header, not at the end of the page', () => {
-    const html = detailDocument('9.9.9');
-    const title = html.indexOf('<h1>Proton Drive Sync</h1>');
-    const version = html.indexOf('Version 9.9.9');
-    expect(version).toBeGreaterThan(title);
-    expect(version).toBeLessThan(html.indexOf('</header>'));
-  });
-
-  it('escapes the version in the header', () => {
-    const html = detailDocument('1<2&3');
-    expect(html).toContain('Version 1&lt;2&amp;3');
-    expect(html).not.toContain('Version 1<2&3');
-  });
-
-  it('does not render the version from the snapshot view', () => {
-    const source = readFileSync(new URL('./detailView.ts', import.meta.url), 'utf8');
-    expect(source).not.toContain('Version');
   });
 });
 
@@ -199,8 +180,9 @@ describe('detail page and tray lifecycle', () => {
       const body = await html.text();
       const titleAt = body.indexOf('Proton Drive Sync');
       expect(titleAt).toBeGreaterThan(-1);
-      expect(body.indexOf(`Version ${pkgVersion}`)).toBeGreaterThan(titleAt);
-      const state = (await (await fetch(`${page.url}api/state`)).json()) as { status: EngineStatus; conflicts: unknown[]; quarantine: unknown[] };
+      const state = (await (await fetch(`${page.url}api/state`)).json()) as { status: EngineStatus; conflicts: unknown[]; quarantine: unknown[]; version: string | null };
+      // The page shows the package version of the engine process that serves it.
+      expect(state.version).toBe(pkgVersion);
       expect(state.status.state).toBe('idle');
       expect(state.conflicts).toEqual([]);
       const bad = await fetch(`http://127.0.0.1:${new URL(page.url).port}/wrongtoken/api/state`);

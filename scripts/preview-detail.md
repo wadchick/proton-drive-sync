@@ -17,7 +17,7 @@ It prints one address per scenario and keeps running until you press **Ctrl+C**.
 
 - Each scenario always uses the same port, 47800–47812 in the order below. The secret part of the address changes on every run, so copy the addresses from the output.
 - The previews follow the current Omarchy theme and icon set, like the real page.
-- `npx vite-node` comes with the project's test tools. If `node_modules` is missing, run `npm ci` first.
+- `vite-node` is one of the project's dev dependencies. If `node_modules` is missing, run `npm ci` first.
 
 ## Scenarios
 

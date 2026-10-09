@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Runs the committed engine bundle next to this file with a Node.js found at a fixed place.
+# Omarchy installs Node through mise in the user's home; a system package puts it in /usr/bin.
+# Nothing is resolved through PATH, and Node's own environment switches are dropped so the
+# shell cannot change what the bundle does.
+set -euo pipefail
+
+PLUGIN_DIR=$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)
+ENGINE="$PLUGIN_DIR/dist/cli/main.js"
+
+candidates() {
+  [[ -n ${PROTON_DRIVE_SYNC_NODE:-} ]] && echo "$PROTON_DRIVE_SYNC_NODE"
+  echo /usr/bin/node
+  local installs="${HOME:-/nonexistent}/.local/share/mise/installs/node"
+  if [[ -d $installs ]]; then
+    find "$installs" -mindepth 3 -maxdepth 3 -path '*/bin/node' -type f -perm -u+x 2>/dev/null | sort -V | tail -n 1
+  fi
+}
+
+NODE=""
+while IFS= read -r candidate; do
+  [[ -n $candidate && -x $candidate ]] || continue
+  if "$candidate" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)' 2>/dev/null; then
+    NODE=$candidate
+    break
+  fi
+done < <(candidates)
+
+if [[ -z $NODE ]]; then
+  echo "proton-drive-sync: Node.js 24 or newer was not found in /usr/bin or ~/.local/share/mise/installs/node" >&2
+  exit 1
+fi
+
+unset NODE_OPTIONS NODE_PATH NODE_REPL_EXTERNAL_MODULE
+exec "$NODE" "$ENGINE" "$@"

@@ -17,7 +17,7 @@ class MemoryCursors implements EventCursorStore {
   }
 }
 
-function setup(over: { onEvent?: (e: NodeRemoteEvent) => Promise<void>; onRefresh?: (r: string) => Promise<void>; now?: () => number; silenceThresholdMs?: number } = {}) {
+function setup(over: { onEvent?: (e: NodeRemoteEvent) => Promise<void>; onRefresh?: (r: string) => Promise<void>; now?: () => number; silenceThresholdMs?: number; sleep?: (ms: number, signal?: AbortSignal) => Promise<void> } = {}) {
   const fake = new FakeRemote();
   const cursors = new MemoryCursors();
   const handled: NodeRemoteEvent[] = [];
@@ -35,9 +35,18 @@ function setup(over: { onEvent?: (e: NodeRemoteEvent) => Promise<void>; onRefres
     ...(over.silenceThresholdMs !== undefined ? { silenceThresholdMs: over.silenceThresholdMs } : {}),
     ...(over.now !== undefined ? { now: over.now } : {}),
     // A real (tiny) delay: an instant sleep would turn start() into a tight spin loop.
-    sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 2))),
+    sleep: over.sleep ?? ((ms) => new Promise((r) => setTimeout(r, Math.min(ms, 2)))),
   });
   return { fake, cursors, feed, handled, refreshes, statuses };
+}
+
+/** Wait until the poll loop reaches its next parked interval. */
+async function untilParked(releaseSleep: readonly (() => void)[], n: number): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (releaseSleep.length < n) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for the feed loop');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 describe('RemoteChangeFeed', () => {
@@ -111,19 +120,51 @@ describe('RemoteChangeFeed', () => {
 
   it('goes degraded on poll failures and requests a refresh once the stream has been silent too long', async () => {
     let t = 1_000_000;
-    const { fake, feed, refreshes, statuses } = setup({ now: () => t, silenceThresholdMs: 5000 });
+    const releaseSleep: (() => void)[] = [];
+    const { fake, feed, refreshes, statuses } = setup({
+      now: () => t,
+      silenceThresholdMs: 5000,
+      // Step the poll interval by hand. Wall-clock sleeps race the fake clock:
+      // a fast run can spend every injected fault before the silence threshold,
+      // and the next successful poll then clears the clock so no refresh is asked.
+      sleep: (_ms, signal) => new Promise((resolve, reject) => {
+        if (signal?.aborted === true) {
+          reject(new Error('aborted'));
+          return;
+        }
+        let settled = false;
+        const finish = (aborted: boolean) => {
+          if (settled) return;
+          settled = true;
+          if (aborted) reject(new Error('aborted'));
+          else resolve();
+        };
+        const onAbort = () => { finish(true); };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        releaseSleep.push(() => {
+          signal?.removeEventListener('abort', onAbort);
+          finish(false);
+        });
+      }),
+    });
     await feed.poll();
-    for (let i = 0; i < 6; i++) fake.injectFault('events', { kind: 'connection' });
+    for (let i = 0; i < 3; i++) fake.injectFault('events', { kind: 'connection' });
     feed.start();
-    // Let the loop run a few iterations while advancing the clock past the threshold.
-    for (let i = 0; i < 6; i++) {
-      t += 2000;
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    await feed.stop();
+
+    await untilParked(releaseSleep, 1);
     expect(statuses).toContain('degraded');
-    expect(refreshes).toContain('event stream silent too long');
-    expect(refreshes.filter((r) => r === 'event stream silent too long')).toHaveLength(1);
+    expect(refreshes).toEqual([]);
+
+    t += 6000;
+    releaseSleep[0]?.();
+    await untilParked(releaseSleep, 2);
+    expect(refreshes).toEqual(['event stream silent too long']);
+
+    releaseSleep[1]?.();
+    await untilParked(releaseSleep, 3);
+    expect(refreshes).toEqual(['event stream silent too long']);
+
+    await feed.stop();
     expect(feed.currentStatus).toBe('stopped');
   });
 });
