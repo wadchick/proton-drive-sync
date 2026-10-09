@@ -76,6 +76,8 @@ describe('RecycleBin', () => {
     const removed = bin.purge();
     expect(removed).toEqual(['old.txt']);
     expect(bin.list().map((i) => i.relPath)).toEqual(['new.txt']);
+    // Files are listed with their size on disk.
+    expect(bin.list()[0]?.size).toBe(3);
     const entries = audit.readAll().entries.filter((e) => e.op === 'purge_recycle');
     expect(entries.map((e) => e.path)).toEqual(['old.txt']);
   });
