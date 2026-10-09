@@ -35,18 +35,17 @@ describe('Omarchy package', () => {
   it('speaks to an Omarchy user and leaves personal install notes out', () => {
     expect(readme).toContain('omarchy plugin add https://github.com/zakkoo/proton-drive-sync.git --enable');
     expect(readme).toContain('omarchy plugin remove io.github.zakkoo.proton-drive');
-    expect(readme).toContain('~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/scripts/install-engine');
-    expect(readme).toContain('~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/scripts/install-engine --service');
-    expect(readme).toContain('~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/scripts/remove-engine');
+    expect(readme).toContain('~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/bin/proton-drive-sync doctor');
     expect(readme).toContain('omarchy plugin update io.github.zakkoo.proton-drive');
-    expect(readme).toContain('systemctl --user restart proton-drive-sync.service');
+    expect(readme).toContain('dist/cli/main.js');
+    expect(readme).not.toMatch(/install-engine|systemctl/);
     expect(readme).toMatch(/unofficial/i);
     expect(readme).toMatch(/unsandboxed/i);
     expect(readme).toContain('Node.js 24');
     expect(readme).toContain('Secret Service');
     expect(readme).toContain('@protontech/drive-sdk');
     expect(readme).toContain('@protontech/crypto');
-    expect(readme).toContain('@parcel/watcher');
+    expect(readme).toContain('dbus-next');
     expect(readme).toMatch(/recycle/i);
     expect(readme).toMatch(/Trash/);
     expect(readme).toMatch(/waits for you/);

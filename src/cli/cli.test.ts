@@ -240,8 +240,9 @@ describe('CLI', () => {
     await expect(cli('held', 'confirm')).rejects.toThrow(/usage: held confirm/);
     expect(await cli('held', 'confirm', 'held-42')).toBe(1); // error from the engine is reported, not thrown
     expect(stderr.at(-1)).toMatch(/No held plan/);
-    // A second `run` is refused while the first is active.
-    await expect(cli('run', '--no-tray')).rejects.toThrow(/already running/);
+    // A second `run` steps aside cleanly while the first is active, so a supervisor never restarts it.
+    expect(await cli('run', '--no-tray')).toBe(0);
+    expect(stderr.at(-1)).toMatch(/already running/);
 
     stop?.();
     expect(await running).toBe(0);

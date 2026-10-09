@@ -2,10 +2,9 @@
 // evaluate it, and free of exports so Quickshell can import it as a script.
 
 var LABELS = {
-  not_installed: "Install",
   not_signed_in: "Sign in",
   not_configured: "Setup",
-  not_running: "Off",
+  engine_failed: "Error",
   starting: "Start",
   idle: "Drive",
   scanning: "Scan",
@@ -21,10 +20,9 @@ var LABELS = {
 }
 
 var TOOLTIPS = {
-  not_installed: "Proton Drive engine is not installed",
   not_signed_in: "Sign in to Proton Drive",
   not_configured: "Choose the two folders to sync",
-  not_running: "Proton Drive is not running",
+  engine_failed: "Proton Drive engine keeps stopping",
   starting: "Proton Drive is starting",
   idle: "Proton Drive is in sync",
   scanning: "Proton Drive is scanning",
@@ -67,7 +65,6 @@ function userAttention(status) {
 
 function chipModel(input) {
   var source = input || {}
-  if (source.installed !== true) return view("not_installed", false)
   var status = source.status
   if (status && typeof status.state === "string" && status.state.length > 0) {
     var override = userAttention(status)
@@ -83,7 +80,8 @@ function chipModel(input) {
   if (!doctor) return view("starting", false)
   if (doctor.loggedIn !== true) return view("not_signed_in", true)
   if (doctor.configured !== true) return view("not_configured", false)
-  return view("not_running", false)
+  if (source.engineFailed === true) return view("engine_failed", true)
+  return view("starting", false)
 }
 
 var READING_PREFIXES = [

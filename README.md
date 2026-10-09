@@ -16,15 +16,9 @@ Have fun!
 omarchy plugin add https://github.com/zakkoo/proton-drive-sync.git --enable
 ```
 
-You get a chip on the right of the built-in bar. You need that bar. A replacement bar cannot see this plugin's service.
+That is the whole install. You get a chip on the right of the built-in bar. You need that bar. A replacement bar cannot see this plugin's service.
 
-Click the chip and choose **Install engine**. A terminal opens and builds the engine outside the plugin folder, puts `proton-drive-sync` on your PATH, and starts it with your graphical session. Nothing is fetched or installed until you click.
-
-The same step from a terminal, without the user service if you leave off `--service`:
-
-```sh
-~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/scripts/install-engine --service
-```
+The sync engine ships in this repository as one committed file, `dist/cli/main.js`, with Proton's SDK and every other dependency already inside. Adding the plugin fetches nothing else, runs no package manager, and writes nothing outside your own data. The engine starts from the plugin folder once you have signed in and chosen your folders, and stops with the shell.
 
 ## Sign in
 
@@ -34,42 +28,38 @@ Click the chip. Choose Sign in. A terminal opens Proton's own page, and your pas
 
 The chip tells you what the engine is doing. Open it to pause, resume, sync now, confirm or reject a held change, keep one side of a conflict, or release a file the engine refused to touch. Open folder and Open config show up once a sync pair is saved. Open details shows up while the engine is running.
 
-`proton-drive-sync doctor` reports whether you are installed, signed in, and running. `proton-drive-sync details` prints the loopback details page for the engine you are running.
+The same engine answers from a terminal:
 
-## Reinstall and restart
+```sh
+~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/bin/proton-drive-sync doctor
+```
 
-You update the chip and the engine separately. Update the plugin, build that folder into the engine, then restart the service so the engine you are running is the new build. Your sync folder, Proton session, and config stay.
+`doctor` reports whether you are signed in, configured, and running. `details` prints the loopback details page for the engine you are running.
+
+## Update
 
 ```sh
 omarchy plugin update io.github.zakkoo.proton-drive
-~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/scripts/install-engine
-systemctl --user restart proton-drive-sync.service
 ```
 
-`omarchy plugin update` fast-forwards your installed plugin to the latest published commit. If you have edited that plugin folder yourself, it is left as it is. `install-engine` replaces the engine runtime. The restart command is the background service from `install-engine --service`. If you started `proton-drive-sync` in a terminal, quit that process and start it again.
+`omarchy plugin update` fast-forwards your installed plugin to the latest published commit. If you have edited that plugin folder yourself, it is left as it is. The engine is part of the plugin, so the chip and the engine update together; restart the shell, or sign out and in, so the running engine is the new one. Your sync folder, Proton session, and config stay.
+
+If you installed a version before 0.3.0, the engine used to be built into `~/.local/share` and run from a user service. The plugin removes that old copy, its launcher, and its service the first time the new version loads. Only files carrying this plugin's marker are touched.
 
 ## Remove
-
-Stop the engine while the plugin folder is still on disk:
-
-```sh
-~/.config/omarchy/plugins/io.github.zakkoo.proton-drive/scripts/remove-engine
-```
-
-Then remove the shell plugin:
 
 ```sh
 omarchy plugin remove io.github.zakkoo.proton-drive
 ```
 
-`omarchy plugin remove` takes the chip off your bar. It does not delete your sync folder, your Proton session, or the tool's config. `remove-engine` removes the runtime, the launcher, and this plugin's user service. Your files stay either way.
+`omarchy plugin remove` takes the chip off your bar and stops the engine with it. It does not delete your sync folder, your Proton session, or the tool's config. Your files stay.
 
 ## What it needs
 
 - Omarchy with the built-in bar. The plugin runs unsandboxed, with your user privileges, inside the shell
-- Node.js 24 or newer
+- Node.js 24 or newer, which Omarchy installs for you. The engine looks in `/usr/bin` and in Omarchy's mise directory, never on your PATH
 - A Secret Service for your Proton session, which Omarchy already runs
-- `@protontech/drive-sdk`, `@protontech/crypto`, and `@parcel/watcher`, fetched by the engine installer from this repo's lockfile
+- `@protontech/drive-sdk`, `@protontech/crypto`, `dbus-next`, and `picomatch`, pinned by this repo's lockfile and bundled into the committed engine
 - A Proton account
 
 The project is MIT. See `LICENSE`. The adapted Proton code keeps Proton's own MIT notice in `src/remote/proton/LICENSE-proton.md`.
@@ -84,4 +74,4 @@ npm run test -- --project e2e
 npm run test:fault
 ```
 
-`./scripts/ci.sh` is the full gate. Run it on Node 24.
+`./scripts/ci.sh` is the full gate. Run it on Node 24. It ends by rebuilding `dist/cli/main.js` and fails if the result differs from the committed file, so the bundle under review is always the one these sources produce. Rebuild it yourself with `npm run build`; `sha256sum dist/cli/main.js` gives the hash to quote in a release.

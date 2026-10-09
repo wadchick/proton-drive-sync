@@ -8,20 +8,27 @@ const bar = readFileSync(path.join(root, 'omarchy/BarWidget.qml'), 'utf8');
 const panel = readFileSync(path.join(root, 'omarchy/Panel.qml'), 'utf8');
 
 describe('shell sources', () => {
-  it('the service polls with argument arrays and never starts the engine', () => {
-    expect(service).not.toMatch(/bash|-c|"run"|'run'/);
+  it('the service runs the committed engine through the shipped launcher with argument arrays', () => {
+    expect(service).not.toMatch(/bash|-c|npm|systemctl/);
+    expect(service).toContain('readonly property string launcherPath: pluginDir + "/bin/proton-drive-sync"');
     expect(service).toContain('["doctor", "--json"]');
+    expect(service).toContain('engine.command = [root.launcherPath, "run", "--no-tray"]');
     expect(service).toContain('["omarchy-launch-tui", root.launcherPath, "login"]');
-    expect(service).toContain('installed-by=io.github.zakkoo.proton-drive');
     expect(service).not.toContain('sudo');
   });
 
-  it('installs the engine from a panel click, in a visible terminal, with the shipped installer', () => {
-    expect(service).toContain('["omarchy-launch-tui", root.installerPath, "--service"]');
-    expect(service).toContain('Qt.resolvedUrl("../scripts/install-engine")');
-    expect(panel).toContain('text: "Install engine"');
-    expect(panel).toContain('onClicked: root.service.installEngine()');
-    expect(panel).not.toContain('scripts/install-engine --service');
+  it('starts the engine only once signed in and configured, and gives up after a crash budget', () => {
+    expect(service).toMatch(/if \(!d \|\| d\.loggedIn !== true \|\| d\.configured !== true \|\| d\.running === true\) return/);
+    expect(service).toContain('if (exitCode === 0 && exitStatus === 0) return');
+    expect(service).toContain('readonly property int maxRestarts: 5');
+    expect(service).toContain('root.engineFailed = true');
+    expect(panel).toContain('onClicked: root.service.retryEngine()');
+    expect(panel).not.toMatch(/Install engine|install-engine/);
+  });
+
+  it('cleans up a pre-0.3.0 engine once, with the marker-checked script only', () => {
+    expect(service).toContain('command: [root.pluginDir + "/scripts/remove-engine"]');
+    expect(service).toContain('Component.onCompleted: legacyCleanup.running = true');
   });
 
   it('runs long engine actions in their own process, so pause and polling never wait behind a sync', () => {

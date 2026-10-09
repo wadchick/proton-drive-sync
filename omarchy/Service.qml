@@ -3,17 +3,16 @@ import Quickshell
 import Quickshell.Io
 import "Model.js" as ProtonDriveModel
 
-// Headless poller for the engine that is already running. It never starts
-// that process itself; the only setup it runs is the plugin's own installer,
-// on a click, in a terminal the user can see. The bar reads this object
-// through the shell's own service.
+// Owns the engine process. The engine is the committed bundle next to this file, started
+// through bin/proton-drive-sync once the user has signed in and chosen the two folders.
+// Nothing is downloaded, built, or written outside the user's own data by loading this
+// service. The bar reads this object through the shell's own service.
 Item {
   id: root
   visible: false
 
   property var shell: null
   property bool panelOpen: false
-  property bool launcherOk: false
   property var doctor: null
   property var status: null
   property var conflicts: []
@@ -28,21 +27,22 @@ Item {
   property var longQueue: []
   property string longKind: ""
 
-  readonly property string home: Quickshell.env("HOME") || ""
-  readonly property string launcherPath: home + "/.local/bin/proton-drive-sync"
-  // The installer that ships next to this file, so the button and the README run the same script.
-  readonly property string installerPath: Qt.resolvedUrl("../scripts/install-engine").toString().replace(/^file:\/\//, "")
-  readonly property var chip: ProtonDriveModel.chipModel({
-    installed: launcherOk,
-    doctor: doctor,
-    status: status
-  })
+  // Crash budget for the engine, in the style of the shell's own supervised plugins: a clean
+  // exit means another engine already owns the control socket and is not restarted.
+  property int restarts: 0
+  property double startedAt: 0
+  property bool engineFailed: false
+  readonly property int maxRestarts: 5
+  readonly property int settledMs: 60000
 
-  function noteLauncher(body) {
-    var text = String(body || "")
-    root.launcherOk = text.indexOf("installed-by=io.github.zakkoo.proton-drive") !== -1 && text.indexOf("# runtime=") !== -1
-    if (root.launcherOk) root.poll()
-  }
+  // file:///…/io.github.zakkoo.proton-drive/omarchy/  ->  /…/io.github.zakkoo.proton-drive/
+  readonly property string pluginDir: String(Qt.resolvedUrl("..")).replace(/^file:\/\//, "")
+  readonly property string launcherPath: pluginDir + "/bin/proton-drive-sync"
+  readonly property var chip: ProtonDriveModel.chipModel({
+    doctor: doctor,
+    status: status,
+    engineFailed: engineFailed
+  })
 
   function parseJson(body) {
     try {
@@ -53,7 +53,6 @@ Item {
   }
 
   function enqueue(args, kind) {
-    if (!root.launcherOk) return
     if (root.longKinds.indexOf(kind) !== -1) {
       var pending = root.longQueue.slice()
       pending.push({ args: args, kind: kind })
@@ -74,7 +73,7 @@ Item {
   }
 
   function pump() {
-    if (!root.launcherOk || cli.running || root.queue.length === 0) return
+    if (cli.running || root.queue.length === 0) return
     var next = root.queue.slice()
     var job = next.shift()
     root.queue = next
@@ -84,7 +83,7 @@ Item {
   }
 
   function pumpLong() {
-    if (!root.launcherOk || longCli.running || root.longQueue.length === 0) return
+    if (longCli.running || root.longQueue.length === 0) return
     var next = root.longQueue.slice()
     var job = next.shift()
     root.longQueue = next
@@ -94,14 +93,18 @@ Item {
   }
 
   function poll() {
-    // The launcher is created after the plugin loads. A watch on a path that
-    // did not exist yet never fires, so keep rereading it until it appears.
-    if (!root.launcherOk) {
-      launcherFile.reload()
-      return
-    }
     if (cli.running || root.queue.length > 0) return
     root.enqueue(["doctor", "--json"], "doctor")
+  }
+
+  // Start the engine once it has something to do. Before sign-in or setup `run` would only
+  // exit with an error, which must not count against the crash budget.
+  function ensureEngine() {
+    var d = root.doctor
+    if (!d || d.loggedIn !== true || d.configured !== true || d.running === true) return
+    if (engine.running || root.engineFailed) return
+    engine.command = [root.launcherPath, "run", "--no-tray"]
+    engine.running = true
   }
 
   function handle(kind, code, out, err) {
@@ -116,6 +119,7 @@ Item {
         root.status = null
         root.conflicts = []
         root.quarantine = []
+        root.ensureEngine()
       }
     } else if (kind === "status") {
       root.status = code === 0 && parsed && parsed.state ? parsed : null
@@ -147,15 +151,15 @@ Item {
   }
 
   function signIn() {
-    if (!root.launcherOk || signInProc.running) return
+    if (signInProc.running) return
     signInProc.command = ["omarchy-launch-tui", root.launcherPath, "login"]
     signInProc.running = true
   }
 
-  function installEngine() {
-    if (root.launcherOk || installProc.running) return
-    installProc.command = ["omarchy-launch-tui", root.installerPath, "--service"]
-    installProc.running = true
+  function retryEngine() {
+    root.restarts = 0
+    root.engineFailed = false
+    root.ensureEngine()
   }
 
   function openExternal(target) {
@@ -165,13 +169,30 @@ Item {
     Quickshell.execDetached(["xdg-open", String(target)])
   }
 
-  FileView {
-    id: launcherFile
-    path: root.launcherPath
-    watchChanges: true
-    printErrors: false
-    onLoaded: root.noteLauncher(text())
-    onLoadFailed: function(error) { root.noteLauncher("") }
+  Process {
+    id: engine
+    onRunningChanged: if (running) root.startedAt = Date.now()
+    stdout: SplitParser { onRead: function(line) { console.log("proton-drive-sync:", line) } }
+    stderr: SplitParser { onRead: function(line) { console.warn("proton-drive-sync:", line) } }
+    onExited: function(exitCode, exitStatus) {
+      if (exitCode === 0 && exitStatus === 0) return
+      // An engine that ran a good while before dying is an incident, not a broken install.
+      if (Date.now() - root.startedAt > root.settledMs) root.restarts = 0
+      if (root.restarts >= root.maxRestarts) {
+        root.engineFailed = true
+        console.warn("proton-drive-sync: engine exited " + root.maxRestarts + " times; run " + root.launcherPath + " run in a terminal to see why")
+        return
+      }
+      root.restarts++
+      restartTimer.start()
+    }
+  }
+
+  Timer {
+    id: restartTimer
+    interval: 3000
+    repeat: false
+    onTriggered: root.ensureEngine()
   }
 
   Process {
@@ -207,9 +228,13 @@ Item {
 
   Process { id: signInProc }
 
+  // One-time migration from 0.2.x, which built the engine into ~/.local/share and ran it from
+  // a user unit. The script touches only files carrying this plugin's marker and is a no-op
+  // afterwards; the engine now runs from this checkout.
   Process {
-    id: installProc
-    onExited: function(code) { launcherFile.reload() }
+    id: legacyCleanup
+    command: [root.pluginDir + "/scripts/remove-engine"]
+    onExited: function(code) { root.poll() }
   }
 
   Timer {
@@ -219,5 +244,5 @@ Item {
     onTriggered: root.poll()
   }
 
-  Component.onCompleted: launcherFile.reload()
+  Component.onCompleted: legacyCleanup.running = true
 }

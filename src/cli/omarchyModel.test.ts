@@ -25,26 +25,24 @@ const quiet = { conflicts: 0, quarantined: 0, heldPlan: null };
 
 describe('bar chip model', () => {
   it('covers install, sign-in, setup, stopped engine, syncing, and attention', () => {
-    expect(model.chipModel({ installed: false }).state).toBe('not_installed');
-    expect(model.chipModel({ installed: true, doctor: { loggedIn: false, configured: false } }).state).toBe('not_signed_in');
-    expect(model.chipModel({ installed: true, doctor: { loggedIn: true, configured: false } }).state).toBe('not_configured');
-    expect(model.chipModel({ installed: true, doctor: { loggedIn: true, configured: true, running: false } }).state).toBe('not_running');
-    expect(model.chipModel({ installed: true, status: { state: 'syncing', attention: quiet } })).toMatchObject({ state: 'syncing', urgent: false, label: 'Sync' });
-    expect(model.chipModel({ installed: true, status: { state: 'syncing', attention: quiet, progress: { done: 34, total: 5685 } } })).toMatchObject({ label: 'Sync (34/5685)', tooltip: 'Sync (34/5685)' });
-    expect(model.chipModel({ installed: true, status: { state: 'paused', attention: quiet, progress: { done: 34, total: 5685 } } })).toMatchObject({ label: 'Paused (34/5685)' });
-    expect(model.chipModel({ installed: true, status: { state: 'scanning', attention: quiet, progress: null } })).toMatchObject({ label: 'Scan' });
-    expect(model.chipModel({ installed: true, status: { state: 'idle', attention: quiet, progress: { done: 10, total: 10 } } })).toMatchObject({ label: 'Drive' });
+    expect(model.chipModel({}).state).toBe('starting');
+    expect(model.chipModel({ doctor: { loggedIn: false, configured: false } }).state).toBe('not_signed_in');
+    expect(model.chipModel({ doctor: { loggedIn: true, configured: false } }).state).toBe('not_configured');
+    expect(model.chipModel({ doctor: { loggedIn: true, configured: true, running: false } }).state).toBe('starting');
+    expect(model.chipModel({ doctor: { loggedIn: true, configured: true, running: false }, engineFailed: true })).toMatchObject({ state: 'engine_failed', urgent: true });
+    expect(model.chipModel({ status: { state: 'syncing', attention: quiet } })).toMatchObject({ state: 'syncing', urgent: false, label: 'Sync' });
+    expect(model.chipModel({ status: { state: 'syncing', attention: quiet, progress: { done: 34, total: 5685 } } })).toMatchObject({ label: 'Sync (34/5685)', tooltip: 'Sync (34/5685)' });
+    expect(model.chipModel({ status: { state: 'paused', attention: quiet, progress: { done: 34, total: 5685 } } })).toMatchObject({ label: 'Paused (34/5685)' });
+    expect(model.chipModel({ status: { state: 'scanning', attention: quiet, progress: null } })).toMatchObject({ label: 'Scan' });
+    expect(model.chipModel({ status: { state: 'idle', attention: quiet, progress: { done: 10, total: 10 } } })).toMatchObject({ label: 'Drive' });
     expect(model.chipModel({
-      installed: true,
       status: { state: 'syncing', attention: { conflicts: 1, quarantined: 0, heldPlan: null }, progress: { done: 34, total: 5685 } },
     })).toMatchObject({ state: 'attention', label: 'Check' });
     const attention = model.chipModel({
-      installed: true,
       status: { state: 'idle', attention: { conflicts: 1, quarantined: 0, heldPlan: null } },
     });
     expect(attention).toMatchObject({ state: 'attention', urgent: true });
     const held = model.chipModel({
-      installed: true,
       status: { state: 'syncing', attention: { conflicts: 0, quarantined: 0, heldPlan: { id: 'held-1' } } },
     });
     expect(held.state).toBe('awaiting_confirmation');
@@ -52,13 +50,12 @@ describe('bar chip model', () => {
 
   it('keeps every engine state visually distinct', () => {
     const states = ['starting', 'idle', 'scanning', 'syncing', 'paused', 'offline', 'throttled', 'attention', 'awaiting_confirmation', 'error', 'needs_login', 'stopped'];
-    const labels = states.map((state) => model.chipModel({ installed: true, status: { state, attention: quiet } }).label);
+    const labels = states.map((state) => model.chipModel({ status: { state, attention: quiet } }).label);
     expect(new Set(labels).size).toBe(states.length);
   });
 
   it('keeps the library reading off the chip and out of the pending line', () => {
     const idle = model.chipModel({
-      installed: true,
       status: {
         state: 'idle',
         attention: quiet,

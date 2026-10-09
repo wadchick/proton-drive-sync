@@ -21,7 +21,7 @@ Panel {
   readonly property color urgent: root.bar ? root.bar.urgent : Color.urgent
   readonly property string chipState: service && service.chip ? service.chip.state : ""
   readonly property bool busy: chipState === "syncing" || chipState === "scanning" || chipState === "starting"
-  readonly property bool heroDimmed: chipState === "paused" || chipState === "offline" || chipState === "not_running" || chipState === "stopped" || chipState === "not_installed"
+  readonly property bool heroDimmed: chipState === "paused" || chipState === "offline" || chipState === "stopped" || chipState === "engine_failed"
 
   readonly property var held: {
     var status = service && service.status
@@ -177,20 +177,15 @@ Panel {
 
           // ------------------------------------------------------ onboarding
           Note {
-            visible: root.service && root.service.launcherOk !== true
-            text: "The sync engine is not installed yet. Install engine builds it outside the plugin folder, in a terminal you can watch, and starts it with your session."
+            visible: root.service && root.service.chip && root.service.chip.state === "engine_failed"
+            text: "The engine keeps stopping. Run " + root.service.launcherPath + " run in a terminal to see why, then try again."
           }
 
           ActionButton {
-            visible: root.service && root.service.launcherOk !== true
-            text: "Install engine"
-            iconText: "󰇚"
-            onClicked: root.service.installEngine()
-          }
-
-          Note {
-            visible: root.service && root.service.launcherOk === true && root.service.chip && root.service.chip.state === "not_running"
-            text: "The engine is not running. Start it with systemctl --user start proton-drive-sync.service, or run proton-drive-sync in a terminal."
+            visible: root.service && root.service.chip && root.service.chip.state === "engine_failed"
+            text: "Try again"
+            iconText: "󰑐"
+            onClicked: root.service.retryEngine()
           }
 
           ActionButton {
