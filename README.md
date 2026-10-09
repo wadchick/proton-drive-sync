@@ -74,4 +74,4 @@ npm run test -- --project e2e
 npm run test:fault
 ```
 
-`./scripts/ci.sh` is the full gate. Run it on Node 24. It ends by rebuilding `dist/cli/main.js` and fails if the result differs from the committed file, so the bundle under review is always the one these sources produce. Rebuild it yourself with `npm run build`; `sha256sum dist/cli/main.js` gives the hash to quote in a release.
+`./scripts/ci.sh` is the full gate. Run it on Node 24. It ends by rebuilding `dist/cli/main.js` and fails if the result differs from the committed file, so the bundle under review is always the one these sources produce. A commit that changes the engine rebuilds that file and includes it. `sha256sum dist/cli/main.js` gives the hash to quote in a release.

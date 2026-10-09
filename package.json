@@ -19,7 +19,8 @@
     "test:watch": "vitest",
     "test:fault": "vitest run --project fault",
     "check": "npm run typecheck && npm run lint && npm run test",
-    "postinstall": "node scripts/gen-crypto-types.mjs"
+    "postinstall": "node scripts/gen-crypto-types.mjs",
+    "prepare": "node scripts/prepare.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

@@ -2018,6 +2018,7 @@ function initialStatus(dryRun, now) {
     attention: { conflicts: 0, quarantined: 0, heldPlan: null },
     counts: { ...EMPTY_COUNTS },
     protonDocumentPaths: [],
+    protonDocumentModifiedAt: {},
     summaryLines: ["Starting"]
   };
 }
@@ -15324,10 +15325,10 @@ var require_handshake = __commonJS({
       return process.env[process.platform.match(/$win/) ? "USERPROFILE" : "HOME"];
     }
     function getCookie(context, id2, cb) {
-      const dirname = path23.join(getUserHome(), ".dbus-keyrings");
+      const dirname3 = path23.join(getUserHome(), ".dbus-keyrings");
       if (context.length === 0) context = "org_freedesktop_general";
-      const filename = path23.join(dirname, context);
-      fs.stat(dirname, function(err2, stat4) {
+      const filename = path23.join(dirname3, context);
+      fs.stat(dirname3, function(err2, stat4) {
         if (err2) return cb(err2);
         if (stat4.mode & 18) {
           return cb(
@@ -18920,7 +18921,13 @@ var RecycleBin = class {
             out2.push({ bucket: b, relPath: r2, absolutePath: path10.join(dir, entry.name), kind: "dir" });
             walk(path10.join(dir, entry.name), r2);
           } else {
-            out2.push({ bucket: b, relPath: r2, absolutePath: path10.join(dir, entry.name), kind: "file" });
+            const absolutePath = path10.join(dir, entry.name);
+            let size;
+            try {
+              size = statSync3(absolutePath).size;
+            } catch {
+            }
+            out2.push({ bucket: b, relPath: r2, absolutePath, kind: "file", ...size !== void 0 ? { size } : {} });
           }
         }
       };
@@ -21700,7 +21707,8 @@ var SyncEngine = class extends EventEmitter {
       transfers: [...this.transfers.values()],
       attention: this.computeAttention(),
       counts,
-      protonDocumentPaths: this.libraryCache?.protonDocumentPaths ?? []
+      protonDocumentPaths: this.libraryCache?.protonDocumentPaths ?? [],
+      protonDocumentModifiedAt: this.libraryCache?.protonDocumentModifiedAt ?? {}
     };
     return { ...live, summaryLines: summarize(live) };
   }
@@ -21726,6 +21734,7 @@ var SyncEngine = class extends EventEmitter {
     for (const rel of remote.syncableFilePaths) if (!pairedFilePaths.has(rel)) onlyRemote++;
     this.libraryCache = {
       protonDocumentPaths: remote.protonDocumentPaths,
+      protonDocumentModifiedAt: remote.protonDocumentModifiedAt,
       counts: {
         baseline: kinds.file + kinds.dir,
         localFiles: localPaths.length,
@@ -22323,6 +22332,15 @@ var RemoteMirror = class {
   remove(uid) {
     this.nodes.delete(uid);
   }
+  /**
+   * When a known, non-trashed item last changed (ms): the content's own time when the
+   * saving app recorded one, else Proton's. Null when the item is unknown or trashed.
+   */
+  modifiedAt(uid) {
+    const node = this.nodes.get(uid);
+    if (node === void 0 || node.isTrashed) return null;
+    return (node.claimedModifiedAt ?? node.serverModifiedAt).getTime();
+  }
   /** A poll of the event stream that started at `startedAt` completed successfully. */
   markPolled(startedAt) {
     if (this.asOf === void 0 || startedAt > this.asOf) this.asOf = startedAt;
@@ -22345,6 +22363,7 @@ var RemoteMirror = class {
    */
   library() {
     const protonDocumentPaths = [];
+    const protonDocumentModifiedAt = /* @__PURE__ */ Object.create(null);
     const syncableFilePaths = [];
     let files = 0;
     for (const node of this.nodes.values()) {
@@ -22352,12 +22371,14 @@ var RemoteMirror = class {
       files++;
       const rel = this.relPath(node);
       if (rel === null) continue;
-      if (node.isProtonDocument) protonDocumentPaths.push(rel);
-      else syncableFilePaths.push(rel);
+      if (node.isProtonDocument) {
+        protonDocumentPaths.push(rel);
+        protonDocumentModifiedAt[rel] = (node.claimedModifiedAt ?? node.serverModifiedAt).getTime();
+      } else syncableFilePaths.push(rel);
     }
     protonDocumentPaths.sort();
     syncableFilePaths.sort();
-    return { files, protonDocumentPaths, syncableFilePaths };
+    return { files, protonDocumentPaths, protonDocumentModifiedAt, syncableFilePaths };
   }
   /** Root-relative path, or null when an ancestor is trashed or the chain is broken. */
   relPath(node) {
@@ -22487,7 +22508,14 @@ async function createEngine(options) {
     syncNow: () => e2.syncNow(),
     confirmHeldPlan: (id2) => e2.confirmHeldPlan(id2),
     rejectHeldPlan: (id2) => e2.rejectHeldPlan(id2),
-    listConflicts: () => conflictRepo.open(),
+    // The remote side of a conflict is stored without a time; add the remote file's current
+    // modified time, as `mtimeMs` like the local side's fingerprint.
+    listConflicts: () => conflictRepo.open().map((c2) => {
+      const at = c2.nodeUid === null ? null : mirror.modifiedAt(c2.nodeUid);
+      const remote2 = c2.remote;
+      if (at === null || typeof remote2 !== "object" || remote2 === null || "deleted" in remote2) return c2;
+      return { ...c2, remote: { ...remote2, mtimeMs: at } };
+    }),
     resolveConflict: (id2, choice) => e2.resolveConflict(id2, choice),
     listQuarantine: () => quarantine2.open(),
     releaseQuarantine: (id2) => {
@@ -22939,7 +22967,9 @@ var Credentials = class {
 
 // src/tray/detailPage.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
+import { readFileSync as readFileSync6 } from "node:fs";
 import { createServer as createServer2 } from "node:http";
+import { dirname as dirname2 } from "node:path";
 
 // src/version.ts
 import { readFileSync as readFileSync4 } from "node:fs";
@@ -22994,12 +23024,11 @@ function applySnapshot(doc, data) {
   const host = doc;
   host.__detailUi ??= { actionError: "", sections: {} };
   const ui = host.__detailUi;
+  const locale = data.locale ?? void 0;
+  const when = (ms) => new Date(ms).toLocaleString(locale);
+  const num = (n2) => n2.toLocaleString(locale);
   const esc = (v2) => String(v2).replace(/[&<>"]/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c2] ?? c2);
   const js = (v2) => v2.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  const set = (id2, text) => {
-    const el = doc.getElementById(id2);
-    if (el !== null) el.textContent = text;
-  };
   const sectionState = (id2) => {
     ui.sections[id2] ??= { page: 1, query: "" };
     return ui.sections[id2];
@@ -23024,13 +23053,13 @@ function applySnapshot(doc, data) {
       to: fromIndex + shown.length
     };
   };
-  const paint = (id2, title, body, meta) => {
+  const paint = (id2, title, body, meta, intro) => {
     const el = doc.getElementById(id2);
     if (el === null) return;
     const existing = el.querySelector("input[data-filter]");
     const focused = existing !== null && doc.activeElement === existing;
     if (existing === null) {
-      el.innerHTML = "<h2>" + esc(title) + ' <span data-count></span></h2><div class="toolbar" data-toolbar><input data-filter type="search" aria-label="' + esc(title) + ' filter"><button type="button" class="btn" data-prev>Previous</button><button type="button" class="btn" data-next>Next</button><span data-pager class="pager"></span></div><div class="scroll" data-rows></div>';
+      el.innerHTML = '<div class="section-head"><h2>' + esc(title) + ' <span data-count></span></h2></div><div class="section-body"><p class="intro" data-intro></p><div class="toolbar" data-toolbar>' + search(title + " filter") + '</div><div class="scroll" data-rows></div>' + footer() + "</div>";
       const created = el.querySelector("[data-filter]");
       const goPrev = el.querySelector("[data-prev]");
       const goNext = el.querySelector("[data-next]");
@@ -23044,32 +23073,66 @@ function applySnapshot(doc, data) {
         view.detailNav?.(id2, 1);
       });
     }
+    const introLine = el.querySelector("[data-intro]");
+    if (introLine !== null) introLine.textContent = intro;
     const count = el.querySelector("[data-count]");
-    if (count !== null) count.textContent = String(meta.total);
+    if (count !== null) count.textContent = "(" + num(meta.total) + ")";
     const pager = el.querySelector("[data-pager]");
-    if (pager !== null) pager.textContent = meta.filtered === 0 ? "0" : String(meta.from) + "–" + String(meta.to) + " of " + String(meta.filtered);
+    if (pager instanceof HTMLElement) {
+      pager.hidden = meta.filtered === 0;
+      pager.textContent = meta.filtered === 0 ? "" : num(meta.from) + "–" + num(meta.to) + " of " + num(meta.filtered);
+    }
     const prev = el.querySelector("[data-prev]");
     const next = el.querySelector("[data-next]");
-    if (prev instanceof HTMLButtonElement) prev.disabled = meta.page <= 1;
-    if (next instanceof HTMLButtonElement) next.disabled = meta.page >= meta.pages;
+    const empty = meta.total === 0;
+    const toolbar = el.querySelector("[data-toolbar]");
+    if (toolbar instanceof HTMLElement) toolbar.hidden = empty;
+    const foot = el.querySelector("[data-footer]");
+    if (foot instanceof HTMLElement) foot.hidden = empty;
+    if (prev instanceof HTMLButtonElement) prev.disabled = empty || meta.page <= 1;
+    if (next instanceof HTMLButtonElement) next.disabled = empty || meta.page >= meta.pages;
     const input = el.querySelector("[data-filter]");
+    if (input instanceof HTMLInputElement) input.disabled = empty;
     if (input instanceof HTMLInputElement && !focused && input.value !== meta.query) input.value = meta.query;
     const rows = el.querySelector("[data-rows]");
     if (rows !== null) rows.innerHTML = body;
   };
-  const emptyBody = (meta) => meta.total === 0 ? '<p class="empty">none</p>' : '<p class="empty">nothing matches</p>';
-  const side = (value) => {
-    const json = "<details><summary>JSON</summary><pre>" + esc(JSON.stringify(value, null, 2)) + "</pre></details>";
-    if (typeof value !== "object" || value === null) return esc(JSON.stringify(value)) + json;
-    const record = value;
-    const bits2 = [];
-    if (typeof record["name"] === "string") bits2.push(record["name"]);
-    if (typeof record["size"] === "number") bits2.push(String(record["size"]) + " B");
-    const mtime = record["mtimeMs"] ?? record["mtime"];
-    if (typeof mtime === "number") bits2.push(new Date(mtime).toISOString());
-    if (typeof record["sha1"] === "string" && record["sha1"] !== "") bits2.push(record["sha1"].slice(0, 8));
-    return esc(bits2.length > 0 ? bits2.join(" · ") : "record") + json;
+  const emptyBody = (meta) => meta.total === 0 ? "" : '<p class="empty">nothing matches</p>';
+  const pathCell = (path23, sub = "", full = path23) => '<td class="fill"><div class="trunc-start" title="' + esc(full) + '"><bdi>' + esc(path23) + "</bdi></div>" + sub + "</td>";
+  const bytes = (n2) => {
+    if (n2 < 1024) return num(n2) + " B";
+    const kb = n2 / 1024;
+    return kb < 1024 ? kb.toLocaleString(locale, { maximumFractionDigits: 1 }) + " KB" : (kb / 1024).toLocaleString(locale, { maximumFractionDigits: 1 }) + " MB";
   };
+  const side = (value, where, kind) => {
+    if (typeof value !== "object" || value === null) return "--";
+    const record = value;
+    if (record["deleted"] === true) return "Deleted";
+    if (record["deleted"] === false) return "Kept";
+    const fingerprint = record["fingerprint"];
+    const fp = typeof fingerprint === "object" && fingerprint !== null ? fingerprint : record;
+    const size = typeof fp["size"] === "number" ? fp["size"] : null;
+    const mtime = fp["mtimeMs"] ?? fp["mtime"];
+    const modified = typeof mtime === "number" ? when(mtime) : null;
+    const tip = [];
+    if (typeof record["path"] === "string") {
+      const label2 = kind === "divergent_move" ? where === "local" ? "Local destination" : "Proton destination" : where === "local" ? "Local copy" : "Proton path";
+      tip.push(label2 + ": " + record["path"]);
+    }
+    if (size !== null) tip.push("Size: " + num(size) + " bytes");
+    if (modified !== null) tip.push("Modified: " + modified);
+    if (typeof record["sha1"] === "string" && record["sha1"] !== "") tip.push("SHA-1: " + record["sha1"]);
+    return '<span title="' + esc(tip.join("\n")) + '">' + esc(size === null ? "Details" : bytes(size)) + (modified === null ? "" : '<br><span class="sub">' + esc(modified) + "</span>") + "</span>";
+  };
+  const icon = (paths) => '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
+  const search = (label2) => '<label class="search">' + icon('<circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/>') + '<input data-filter type="search" placeholder="Search by name…" aria-label="' + esc(label2) + '"></label>';
+  const footer = () => '<div class="table-foot" data-footer><p data-pager class="pager"></p><span class="pages"><button type="button" class="link" data-prev>&lt; Previous</button><button type="button" class="link" data-next>Next &gt;</button></span></div>';
+  const RESOLVE = [
+    ["keep_local", "Keep the local version", icon('<rect x="2" y="2.5" width="12" height="8.5" rx="1"/><path d="M1 13.5h14"/>')],
+    ["keep_remote", "Keep the Proton version", icon('<path d="M3.85 13H12.25A2.8 2.8 0 0 0 12.4 7.4A4.2 4.2 0 1 0 4.03 7.91A2.55 2.55 0 1 0 3.85 13Z"/>')],
+    ["keep_both", "Keep both versions", icon('<rect x="5.5" y="1.5" width="8" height="10" rx="1"/><path d="M3 4.5v9a1 1 0 0 0 1 1h6.5"/>')]
+  ];
+  const DISMISS = [["keep_both", "Dismiss", icon('<path d="M3 8.5l3.25 3.25L13 5"/>')]];
   const view = doc.defaultView ?? globalThis;
   view.detailNav = (id2, dir) => {
     const st = sectionState(id2);
@@ -23083,27 +23146,84 @@ function applySnapshot(doc, data) {
     st.page = 1;
     applySnapshot(doc, data);
   };
-  set("state", s2.state.replace(/_/g, " "));
-  set("reason", s2.reason ?? "");
   const progress = s2.progress;
-  let glance = "";
-  if (progress !== null && progress.total > 0 && s2.state === "syncing") glance = "Sync (" + String(progress.done) + "/" + String(progress.total) + ")";
-  if (progress !== null && progress.total > 0 && s2.state === "paused") glance = "Paused (" + String(progress.done) + "/" + String(progress.total) + ")";
-  set("glance", glance);
-  const primary = s2.state === "paused" ? "act-resume" : s2.state === "needs_login" || s2.state === "stopped" || s2.state === "error" || s2.state === "offline" ? "act-sync" : "act-pause";
-  for (const id2 of ["act-pause", "act-resume", "act-sync"]) {
-    const button = doc.getElementById(id2);
-    if (button !== null) button.classList.toggle("primary", id2 === primary);
+  const fraction = progress !== null && progress.total > 0 && (s2.state === "syncing" || s2.state === "paused") ? " (" + String(progress.done) + "/" + String(progress.total) + ")" : "";
+  const label = s2.state.replace(/_/g, " ") + fraction;
+  const tone = s2.state === "error" || s2.state === "needs_login" ? "danger" : s2.state === "offline" || s2.state === "throttled" || s2.state === "attention" || s2.state === "awaiting_confirmation" ? "warn" : "normal";
+  const reason = s2.state === "paused" ? "" : s2.reason ?? "";
+  const PHRASES = {
+    "sync root unavailable": "sync folder is missing",
+    sync_root_missing: "sync folder is missing",
+    sync_root_changed: "sync folder was replaced",
+    remote_root_missing: "proton drive folder is missing",
+    remote_root_changed: "proton drive folder was trashed or replaced",
+    disk_space_low: "not enough disk space",
+    "disk full": "not enough disk space",
+    store_corrupt: "sync database is damaged",
+    "session rejected": "sign in to proton again",
+    "no stored session": "sign in to proton again",
+    "server asked us to slow down": "proton asked us to slow down"
+  };
+  const known = (key3) => Object.prototype.hasOwnProperty.call(PHRASES, key3) ? PHRASES[key3] : void 0;
+  const ENDINGS = [
+    [/: (?:connection failed|timed out)$/, "can't reach proton"],
+    [/: server error 5\d\d$/, "proton is having trouble"],
+    [/: rate limited$/, "proton asked us to slow down"],
+    [/: response exceeded the size limit$/, "unexpected response from proton"]
+  ];
+  const phrase = (text) => known(text) ?? known(/^([a-z_]+)(?::|$)/.exec(text)?.[1] ?? "") ?? ENDINGS.find(([pattern]) => pattern.test(text))?.[1] ?? (s2.state === "offline" ? "can't reach proton" : text);
+  const messages = [{ text: label, tone }];
+  if (reason !== "") messages.push({ text: phrase(reason), tone });
+  if (s2.dryRun) messages.push({ text: "dry run", tone: "warn" });
+  if (s2.degraded) messages.push({ text: "event stream degraded", tone: "warn" });
+  const key2 = messages.map((m2) => m2.tone + ":" + m2.text).join("\n");
+  if (ui.status?.key !== key2) ui.status = { messages, index: 0, key: key2 };
+  const stateLine = doc.getElementById("state");
+  if (stateLine !== null) {
+    const current = ui.status.messages[ui.status.index] ?? messages[0];
+    stateLine.textContent = current?.text ?? label;
+    stateLine.setAttribute("data-tone", current?.tone ?? tone);
+    const all = [label];
+    if (reason !== "") all.push(reason);
+    if (s2.dryRun) all.push("Dry run");
+    if (s2.degraded) all.push("The event stream is degraded");
+    stateLine.setAttribute("title", all.join("\n"));
   }
-  const flags = doc.getElementById("flags");
-  if (flags !== null) {
-    const notes = [];
-    if (s2.dryRun) notes.push("Dry run");
-    if (s2.degraded) notes.push("The event stream is degraded");
-    flags.innerHTML = notes.map((note) => '<span class="note">' + esc(note) + "</span>").join("");
+  const syncButton = doc.getElementById("act-sync");
+  if (syncButton !== null) syncButton.classList.toggle("primary", s2.state === "needs_login" || s2.state === "stopped" || s2.state === "error" || s2.state === "offline");
+  if (syncButton instanceof HTMLButtonElement) {
+    syncButton.disabled = s2.state === "paused";
+    syncButton.title = s2.state === "paused" ? "Resume sync to sync now" : "Sync now";
+  }
+  const toggle = doc.getElementById("sync-toggle");
+  if (toggle !== null) {
+    const on = s2.state !== "paused";
+    toggle.setAttribute("aria-checked", on ? "true" : "false");
+    toggle.setAttribute("title", on ? "Sync is on. Click to pause" : "Sync is paused. Click to resume");
+    toggle.setAttribute("onclick", on ? "act('pause')" : "act('resume')");
   }
   const lines = doc.getElementById("lines");
-  if (lines !== null) lines.innerHTML = s2.summaryLines.map((line) => '<p class="reading">' + esc(line) + "</p>").join("");
+  if (lines !== null) {
+    const pair = (k, v2) => '<span class="k">' + esc(k) + '</span><span class="v" title="' + esc(v2) + '">' + esc(v2) + "</span>";
+    const gap = '<span class="gap"></span>';
+    const c2 = s2.counts;
+    const p2 = s2.pending;
+    const roots = data.roots ?? null;
+    const rows = roots === null ? [] : [[pair("Local path", roots.local), pair("Proton Drive path", roots.remote)]];
+    rows.push([pair("Local files", num(c2.localFiles)), pair("Proton Drive files", num(c2.remoteFiles))], [gap, gap]);
+    rows.push(
+      [pair("Last sync", s2.lastSuccessfulSyncAt === null ? "--" : when(s2.lastSuccessfulSyncAt)), pair("Files copied last sync", s2.lastRunFilesCopied === null ? "--" : num(s2.lastRunFilesCopied))],
+      [pair("Last full sync", s2.lastFullSyncAt === null ? "--" : when(s2.lastFullSyncAt)), pair("Pending", p2.uploads + p2.downloads + p2.other === 0 ? "None" : num(p2.uploads) + " up, " + num(p2.downloads) + " down, " + num(p2.other) + " other")],
+      [pair("Files in sync", num(c2.pairedFiles)), pair("Folders in sync", num(c2.pairedFolders))]
+    );
+    if (c2.onlyLocal > 0 || c2.onlyRemote > 0) rows.push([pair("Only on this computer", num(c2.onlyLocal)), pair("Only on Proton", num(c2.onlyRemote))]);
+    const blank = '<span class="k">&nbsp;</span><span class="v"></span>';
+    const plugin = typeof data.version === "string" && data.version !== "" ? pair("Plugin", "v" + data.version) : null;
+    if (c2.protonDocuments > 0) rows.push([pair("Files skipped", num(c2.protonDocuments)), plugin ?? blank]);
+    else if (plugin !== null) rows.push([blank, plugin]);
+    const half = (side2) => '<div class="half">' + rows.map((row2) => row2[side2]).join("") + "</div>";
+    lines.innerHTML = '<div class="stats">' + half(0) + half(1) + "</div>";
+  }
   const actionError = doc.getElementById("action-error");
   if (actionError !== null) {
     actionError.textContent = ui.actionError;
@@ -23118,7 +23238,7 @@ function applySnapshot(doc, data) {
     } else {
       heldEl.hidden = false;
       if (heldEl.querySelector("[data-rows]") === null) {
-        heldEl.innerHTML = '<div class="warn"><h2>Held plan <span data-count></span></h2><p><strong>Confirmation required:</strong> <span data-reason></span></p><div class="toolbar"><input data-filter type="search" aria-label="Held plan filter"><button type="button" class="btn" data-prev>Previous</button><button type="button" class="btn" data-next>Next</button><span data-pager class="pager"></span></div><div class="scroll" data-rows></div><p class="actions"><button type="button" class="btn primary" data-confirm>Proceed</button><button type="button" class="btn" data-reject>Reject</button></p></div>';
+        heldEl.innerHTML = '<div class="warn"><div class="section-head"><h2>Held plan <span data-count></span></h2></div><p><strong>Confirmation required:</strong> <span data-reason></span></p><div class="toolbar">' + search("Held plan filter") + '<span class="actions held-actions"><button type="button" class="btn primary" data-confirm>Proceed</button><button type="button" class="btn" data-reject>Reject</button></span></div><div class="scroll" data-rows></div>' + footer() + "</div>";
         const heldFilter = heldEl.querySelector("[data-filter]");
         const heldGoPrev = heldEl.querySelector("[data-prev]");
         const heldGoNext = heldEl.querySelector("[data-next]");
@@ -23132,8 +23252,8 @@ function applySnapshot(doc, data) {
           view.detailNav?.("held", 1);
         });
       }
-      const reason = heldEl.querySelector("[data-reason]");
-      if (reason !== null) reason.textContent = held2.reason;
+      const reason2 = heldEl.querySelector("[data-reason]");
+      if (reason2 !== null) reason2.textContent = held2.reason;
       const confirm = heldEl.querySelector("[data-confirm]");
       const reject = heldEl.querySelector("[data-reject]");
       if (confirm !== null) confirm.setAttribute("onclick", "act('confirm', {id:'" + js(held2.id) + "'})");
@@ -23142,46 +23262,133 @@ function applySnapshot(doc, data) {
       const heldInput = heldEl.querySelector("[data-filter]");
       const heldFocused = heldInput !== null && doc.activeElement === heldInput;
       const heldCount = heldEl.querySelector("[data-count]");
-      if (heldCount !== null) heldCount.textContent = String(heldPage.total);
+      if (heldCount !== null) heldCount.textContent = "(" + num(heldPage.total) + ")";
       const heldPager = heldEl.querySelector("[data-pager]");
-      if (heldPager !== null) heldPager.textContent = heldPage.filtered === 0 ? "0" : String(heldPage.from) + "–" + String(heldPage.to) + " of " + String(heldPage.filtered);
+      if (heldPager instanceof HTMLElement) {
+        heldPager.hidden = heldPage.filtered === 0;
+        heldPager.textContent = heldPage.filtered === 0 ? "" : num(heldPage.from) + "–" + num(heldPage.to) + " of " + num(heldPage.filtered);
+      }
       const heldPrev = heldEl.querySelector("[data-prev]");
       const heldNext = heldEl.querySelector("[data-next]");
-      if (heldPrev instanceof HTMLButtonElement) heldPrev.disabled = heldPage.page <= 1;
-      if (heldNext instanceof HTMLButtonElement) heldNext.disabled = heldPage.page >= heldPage.pages;
+      const heldEmpty = heldPage.total === 0;
+      if (heldPrev instanceof HTMLButtonElement) heldPrev.disabled = heldEmpty || heldPage.page <= 1;
+      if (heldNext instanceof HTMLButtonElement) heldNext.disabled = heldEmpty || heldPage.page >= heldPage.pages;
+      if (heldInput instanceof HTMLInputElement) heldInput.disabled = heldEmpty;
       if (heldInput instanceof HTMLInputElement && !heldFocused && heldInput.value !== heldPage.query) heldInput.value = heldPage.query;
       const heldRows = heldEl.querySelector("[data-rows]");
       if (heldRows !== null) {
-        heldRows.innerHTML = heldPage.filtered === 0 ? emptyBody(heldPage) : "<ul>" + heldPage.shown.map((path23) => "<li>" + esc(path23) + "</li>").join("") + "</ul>";
+        heldRows.innerHTML = heldPage.filtered === 0 ? emptyBody(heldPage) : "<table><tr><th>Name</th></tr>" + heldPage.shown.map((item) => "<tr>" + pathCell(item) + "</tr>").join("") + "</table>";
       }
     }
   }
   const docs = windowOf("proton-documents", s2.protonDocumentPaths, (path23) => path23);
-  paint("proton-documents", "Proton documents", docs.filtered === 0 ? emptyBody(docs) : "<ul>" + docs.shown.map((path23) => "<li>" + esc(path23) + "</li>").join("") + "</ul>", docs);
+  const remoteRoot = data.roots ? data.roots.remote.replace(/\/+$/, "") + "/" : "";
+  const docRows = docs.shown.map((path23) => {
+    const times = s2.protonDocumentModifiedAt;
+    const raw = times !== void 0 && Object.prototype.hasOwnProperty.call(times, path23) ? times[path23] : void 0;
+    const modified = typeof raw === "number" && Number.isFinite(raw) ? raw : void 0;
+    return "<tr>" + pathCell(path23, "", remoteRoot + path23) + '<td class="nowrap">' + (modified === void 0 ? "--" : '<time datetime="' + esc(new Date(modified).toISOString()) + '">' + esc(when(modified)) + "</time>") + "</td></tr>";
+  }).join("");
+  paint(
+    "proton-documents",
+    "Skipped",
+    docs.filtered === 0 ? emptyBody(docs) : "<table><tr><th>Name</th><th>Modified</th></tr>" + docRows + "</table>",
+    docs,
+    "Proton Docs and Sheets are skipped: they exist only on Proton and open in the browser, so there is no file to copy to this computer."
+  );
   const transfers = windowOf("transfers", s2.transfers, (row2) => row2.relPath);
   const transferRows = transfers.shown.map((row2) => {
     const pct = row2.total !== void 0 && row2.total > 0 ? Math.round(row2.bytes / row2.total * 100) : 0;
-    return "<tr><td>" + (row2.kind === "upload" ? "↑ upload" : "↓ download") + "</td><td>" + esc(row2.relPath) + '</td><td><div class="bar"><div style="width:' + String(pct) + '%"></div></div></td><td>' + String(Math.round(row2.speed / 1024)) + " KiB/s</td></tr>";
+    return "<tr>" + pathCell(row2.relPath) + '<td class="nowrap">' + (row2.kind === "upload" ? "↑ upload" : "↓ download") + '</td><td><div class="bar"><div style="width:' + String(pct) + '%"></div></div></td><td class="nowrap">' + num(Math.round(row2.speed / 1024)) + " KiB/s</td></tr>";
   }).join("");
-  paint("transfers", "Transfers", transfers.filtered === 0 ? emptyBody(transfers) : "<table><tr><th>Direction</th><th>Path</th><th>Progress</th><th>Speed</th></tr>" + transferRows + "</table>", transfers);
+  paint(
+    "transfers",
+    "Transfers",
+    transfers.filtered === 0 ? emptyBody(transfers) : "<table><tr><th>Name</th><th>Direction</th><th>Progress</th><th>Speed</th></tr>" + transferRows + "</table>",
+    transfers,
+    "Uploads and downloads in progress."
+  );
   const conflicts2 = windowOf("conflicts", data.conflicts, (row2) => row2.relPath);
-  const resolveButton = (id2, choice, label) => `<button type="button" class="btn" onclick="act('resolve', {id:` + String(id2) + ", choice:'" + choice + `'})">` + label + "</button>";
-  const conflictRows = conflicts2.shown.map((row2) => "<tr><td>" + esc(row2.relPath) + "</td><td>" + esc(row2.kind) + "</td><td>" + side(row2.local) + "</td><td>" + side(row2.remote) + "</td><td>" + // A delete-versus-edit conflict already kept the edit on both sides: only closing it is left
-  // (as in the tray menu).
-  (row2.kind === "delete_vs_edit" ? "" : resolveButton(row2.id, "keep_local", "Keep local") + resolveButton(row2.id, "keep_remote", "Keep remote")) + resolveButton(row2.id, "keep_both", "Keep both") + "</td></tr>").join("");
-  paint("conflicts", "Conflicts", conflicts2.filtered === 0 ? emptyBody(conflicts2) : "<table><tr><th>Path</th><th>Kind</th><th>Local</th><th>Remote</th><th>Resolve</th></tr>" + conflictRows + "</table>", conflicts2);
+  const deleted = (v2) => typeof v2 === "object" && v2 !== null && v2["deleted"] === true;
+  const happened = (row2) => {
+    if (row2.kind === "content") return "Edited on both sides";
+    if (row2.kind === "divergent_move") return "Moved to different places";
+    if (row2.kind === "create_create") return "Created on both sides";
+    if (row2.kind === "delete_vs_edit") {
+      if (deleted(row2.local)) return "Deleted here, edited on Proton";
+      if (deleted(row2.remote)) return "Edited here, deleted on Proton";
+      return "Deleted on one side, edited on the other";
+    }
+    return row2.kind;
+  };
+  const conflictRows = conflicts2.shown.map((row2) => "<tr>" + pathCell(row2.relPath, '<div class="sub" title="' + esc(row2.kind) + '">' + esc(happened(row2)) + "</div>") + '<td class="nowrap">' + side(row2.local, "local", row2.kind) + '</td><td class="nowrap">' + side(row2.remote, "remote", row2.kind) + '</td><td class="nowrap actions-cell' + (row2.kind === "delete_vs_edit" ? " end" : "") + '">' + (row2.kind === "delete_vs_edit" ? DISMISS : RESOLVE).map(([choice, label2, svg]) => '<button type="button" class="btn icon" title="' + label2 + '" aria-label="' + label2 + `" onclick="act('resolve', {id:` + String(row2.id) + ", choice:'" + choice + `'})">` + svg + "</button>").join("") + "</td></tr>").join("");
+  paint(
+    "conflicts",
+    "Conflicts",
+    conflicts2.filtered === 0 ? emptyBody(conflicts2) : "<table><tr><th>Name</th><th>Local</th><th>Remote</th><th>Resolve</th></tr>" + conflictRows + "</table>",
+    conflicts2,
+    "Files changed on both sides since the last sync. Both versions are safe until you choose: keep one, or keep both. Where a file was deleted on one side and edited on the other, the edit is already kept, so just dismiss it."
+  );
   const quarantine2 = windowOf("quarantine", data.quarantine, (row2) => row2.relPath ?? "");
-  const quarantineRows = quarantine2.shown.map((row2) => "<tr><td>" + esc(row2.relPath ?? "-") + "</td><td>" + esc(row2.nodeUid ?? "-") + "</td><td>" + esc(row2.reason) + `</td><td><button type="button" class="btn" onclick="act('release', {id:` + String(row2.id) + '})">Release</button></td></tr>').join("");
-  paint("quarantine", "Quarantine", quarantine2.filtered === 0 ? emptyBody(quarantine2) : "<table><tr><th>Path</th><th>Node</th><th>Reason</th><th></th></tr>" + quarantineRows + "</table>", quarantine2);
+  const QUARANTINE_REASONS = { verification_failed: "Failed its integrity check", unknown_outcome: "Unclear after a crash" };
+  const STEPS = {
+    upload: "Upload",
+    download: "Download",
+    move_local: "Move here",
+    move_remote: "Move on Proton",
+    recycle_local: "Recycle here",
+    trash_remote: "Trash on Proton",
+    create_local_folder: "Create folder here",
+    create_remote_folder: "Create folder on Proton",
+    conflict_rename_local: "Set aside a conflict copy"
+  };
+  const RELEASE_ICON = icon('<rect x="3" y="7.5" width="10" height="7" rx="1"/><path d="M5.5 7.5V5a2.5 2.5 0 0 1 4.9-.7"/>');
+  const quarantineRows = quarantine2.shown.map((row2) => {
+    const reason2 = Object.prototype.hasOwnProperty.call(QUARANTINE_REASONS, row2.reason) ? QUARANTINE_REASONS[row2.reason] ?? row2.reason : row2.reason;
+    const details2 = typeof row2.details === "object" && row2.details !== null ? row2.details : {};
+    const tip = [];
+    const op = details2["op"];
+    if (typeof op === "string" && op !== "") tip.push("Step: " + (Object.prototype.hasOwnProperty.call(STEPS, op) ? STEPS[op] ?? op : op));
+    if (typeof details2["error"] === "string" && details2["error"] !== "") tip.push("Error: " + details2["error"]);
+    if (typeof details2["note"] === "string" && details2["note"] !== "") tip.push("Note: " + details2["note"]);
+    if (row2.nodeUid !== null && row2.nodeUid !== "") tip.push("Node: " + row2.nodeUid);
+    tip.push("Reason: " + row2.reason);
+    const at = typeof row2.createdAt === "number" && Number.isFinite(row2.createdAt) ? row2.createdAt : null;
+    return "<tr>" + pathCell(row2.relPath ?? "-", '<div class="sub" title="' + esc(tip.join("\n")) + '">' + esc(reason2) + "</div>") + '<td class="nowrap">' + (at === null ? "--" : '<time datetime="' + esc(new Date(at).toISOString()) + '">' + esc(when(at)) + "</time>") + `</td><td class="nowrap actions-cell end"><button type="button" class="btn icon" title="Release: let sync handle it again" aria-label="Release" onclick="act('release', {id:` + String(row2.id) + '})">' + RELEASE_ICON + "</button></td></tr>";
+  }).join("");
+  paint(
+    "quarantine",
+    "Quarantine",
+    quarantine2.filtered === 0 ? emptyBody(quarantine2) : "<table><tr><th>Name</th><th>Quarantined</th><th>Release</th></tr>" + quarantineRows + "</table>",
+    quarantine2,
+    "Files sync stopped touching because a transfer failed its integrity check or its result was unclear after a crash. Release one to let sync handle it again."
+  );
   const recycle2 = windowOf("recycle", data.recycle, (row2) => row2.relPath);
   const recycleRows = recycle2.shown.map((row2) => {
     const iso = new Date(row2.bucket).toISOString();
-    return '<tr><td><time datetime="' + esc(iso) + '">' + esc(new Date(row2.bucket).toLocaleString()) + " " + esc(iso) + "</time></td><td>" + esc(row2.relPath) + "</td></tr>";
+    return "<tr>" + pathCell(row2.relPath) + '<td class="nowrap">' + (row2.size === void 0 ? "--" : esc(bytes(row2.size))) + '</td><td class="nowrap"><time datetime="' + esc(iso) + '" title="' + esc(iso) + '">' + esc(when(row2.bucket)) + "</time></td></tr>";
   }).join("");
-  paint("recycle", "Recycle bin", recycle2.filtered === 0 ? emptyBody(recycle2) : "<table><tr><th>Recycled at</th><th>Path</th></tr>" + recycleRows + "</table>", recycle2);
+  paint(
+    "recycle",
+    "Recycled",
+    recycle2.filtered === 0 ? emptyBody(recycle2) : "<table><tr><th>Name</th><th>Size</th><th>Recycled at</th></tr>" + recycleRows + "</table>",
+    recycle2,
+    "Local files moved aside instead of deleted or overwritten, kept in " + (data.roots ? data.roots.local + "/.proton-sync/recycle" : "the sync folder under .proton-sync/recycle") + ". Copy one back to restore it."
+  );
+}
+function advanceStatus(doc) {
+  const status = doc.__detailUi?.status;
+  const line = doc.getElementById("state");
+  if (status === void 0 || line === null || status.messages.length < 2) return;
+  status.index = (status.index + 1) % status.messages.length;
+  const message = status.messages[status.index];
+  if (message === void 0) return;
+  line.textContent = message.text;
+  line.setAttribute("data-tone", message.tone);
 }
 function clientScript() {
   return `${applySnapshot.toString()}
+${advanceStatus.toString()}
 function detailUi() {
   document.__detailUi ??= { actionError: '', sections: {} };
   return document.__detailUi;
@@ -23199,23 +23406,284 @@ async function act(name, body) {
   detailUi().actionError = message;
   await refresh();
 }
+// Each engine run serves the page at a new secret address, so a page left open across a
+// restart can no longer reach it. Say so instead of quietly showing old data.
+let missedRefreshes = 0;
+function setConnected(connected) {
+  const notice = document.getElementById('connection-lost');
+  if (notice !== null) notice.hidden = connected;
+  document.body.classList.toggle('stale', !connected);
+}
 async function refresh() {
-  const response = await fetch(base + '/api/state');
-  applySnapshot(document, await response.json());
+  let data;
+  try {
+    const response = await fetch(base + '/api/state');
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    data = await response.json();
+  } catch {
+    // Two misses in a row (about 4 seconds) before the notice, so one hiccup does not flash it.
+    missedRefreshes += 1;
+    if (missedRefreshes >= 2) setConnected(false);
+    return;
+  }
+  missedRefreshes = 0;
+  setConnected(true);
+  applySnapshot(document, data);
+}
+async function refreshTheme() {
+  try {
+    const response = await fetch(base + '/api/theme');
+    const theme = await response.json();
+    const css = String(theme.css ?? '');
+    const style = document.getElementById('omarchy-theme');
+    if (style !== null && style.textContent !== css) style.textContent = css;
+    document.documentElement.classList.toggle('omarchy', css !== '');
+    const icon = encodeURIComponent(String(theme.icon ?? ''));
+    const img = document.getElementById('title-icon');
+    if (img !== null && img.dataset.icon !== icon) {
+      img.dataset.icon = icon;
+      img.hidden = icon === '';
+      if (icon !== '') img.src = 'icon/folder?v=' + icon;
+    }
+  } catch {
+    // Keep the current look; the next tick retries.
+  }
 }
 refresh();
-window.__detailRefresh = setInterval(refresh, 2000);`;
+window.__detailRefresh = setInterval(refresh, 2000);
+window.__detailTheme = setInterval(refreshTheme, 2000);
+// Every 2.8 seconds the state line moves to its next message, fading out (180ms) and back in
+// (260ms) like the Wi-Fi panel's caption; with reduced motion it just changes.
+function rotateStatus() {
+  const status = detailUi().status;
+  const line = document.getElementById('state');
+  if (!status || status.messages.length < 2 || line === null) return;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    advanceStatus(document);
+    return;
+  }
+  line.classList.add('fading');
+  setTimeout(() => {
+    advanceStatus(document);
+    line.classList.remove('fading');
+  }, 180);
+}
+window.__detailStatus = setInterval(rotateStatus, 2800);`;
+}
+
+// src/tray/omarchyTheme.ts
+import { existsSync as existsSync5, readFileSync as readFileSync5 } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+var REQUIRED = ["background", "foreground", "accent"];
+var ENTRY = /^\s*([a-z_]+)\s*=\s*"(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8}))"\s*$/;
+var MODE = /^\s*mode\s*=\s*"(dark|light)"\s*$/;
+function omarchyColorsPath(env = process.env) {
+  const xdg = env["XDG_STATE_HOME"];
+  const state = xdg !== void 0 && xdg !== "" ? xdg : join(env["HOME"] ?? homedir(), ".local", "state");
+  return join(state, "omarchy", "current", "theme", "colors.toml");
+}
+function parseOmarchyColors(text) {
+  const colors = {};
+  let mode = "dark";
+  for (const line of text.split("\n")) {
+    const entry = ENTRY.exec(line);
+    if (entry !== null) {
+      colors[entry[1] ?? ""] = (entry[2] ?? "").toLowerCase();
+      continue;
+    }
+    const m2 = MODE.exec(line);
+    if (m2 !== null) mode = m2[1] === "light" ? "light" : "dark";
+  }
+  return REQUIRED.every((key2) => key2 in colors) ? { mode, colors, controls: {} } : null;
+}
+var ROLES = ["foreground", "text", "accent", "urgent", "background", "transparent"];
+var HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/;
+var WIDTHS = /^\d{1,2}(?: \d{1,2}){0,3}$/;
+var CONTROL_LINE = /^\s*([a-z-]+)\s*=\s*(?:"([^"]*)"|(-?[0-9.]+))\s*(?:#.*)?$/;
+function parseShellControls(text) {
+  const controls = {};
+  let inControls = false;
+  for (const line of text.split("\n")) {
+    const section = /^\s*\[([^\]]+)\]/.exec(line);
+    if (section !== null) {
+      inControls = section[1]?.trim() === "controls";
+      continue;
+    }
+    if (!inControls) continue;
+    const entry = CONTROL_LINE.exec(line);
+    if (entry === null) continue;
+    const key2 = entry[1] ?? "";
+    const raw = (entry[2] ?? entry[3] ?? "").trim().toLowerCase();
+    if (key2.endsWith("-alpha")) {
+      const n2 = Number(raw);
+      if (raw !== "" && Number.isFinite(n2)) controls[key2] = Math.min(1, Math.max(0, n2));
+    } else if (key2.endsWith("-border-width")) {
+      if (WIDTHS.test(raw)) controls[key2] = raw;
+    } else if (key2.endsWith("-color") || key2.endsWith("-border")) {
+      if (ROLES.includes(raw) || HEX.test(raw)) controls[key2] = raw;
+    }
+  }
+  return controls;
+}
+function readOmarchyTheme(path23) {
+  let theme;
+  try {
+    theme = parseOmarchyColors(readFileSync5(path23, "utf8"));
+  } catch {
+    return null;
+  }
+  if (theme === null) return null;
+  try {
+    theme.controls = parseShellControls(readFileSync5(join(dirname(path23), "shell.toml"), "utf8"));
+  } catch {
+  }
+  return theme;
+}
+function roleColor(value) {
+  if (HEX.test(value)) return value;
+  if (value === "accent") return "var(--om-accent)";
+  if (value === "urgent") return "var(--om-red, var(--om-accent))";
+  if (value === "background") return "var(--om-background)";
+  if (value === "transparent") return "transparent";
+  return "var(--om-foreground)";
+}
+function tint(color, alpha) {
+  if (color === "transparent" || alpha <= 0) return "transparent";
+  return `color-mix(in srgb, ${color} ${String(Math.round(alpha * 1e3) / 10)}%, transparent)`;
+}
+function sides(widths) {
+  const n2 = widths.split(" ").map(Number);
+  const [t2 = 0, r2 = t2, b = t2, l2 = r2] = n2;
+  return [t2, r2, b, l2];
+}
+function controlVars(c2) {
+  const str = (key2, fallback) => typeof c2[key2] === "string" ? c2[key2] : fallback;
+  const num = (key2, fallback) => typeof c2[key2] === "number" ? c2[key2] : fallback;
+  const normalColor = str("normal-color", "foreground");
+  const hoverColor = str("hover-cursor-color", "foreground");
+  const normalBorder = str("normal-border", normalColor);
+  const hoverBorder = str("hover-cursor-border", hoverColor);
+  const normalBorderAlpha = num("normal-border-alpha", 0.4);
+  const hoverFill = num("hover-cursor-fill-alpha", 0.08);
+  const hoverBorderAlpha = num("hover-cursor-border-alpha", 0.25);
+  const widths = {
+    normal: sides(str("normal-border-width", "1")),
+    hover: sides(str("hover-cursor-border-width", "1")),
+    focus: sides(str("focus-border-width", str("hover-cursor-border-width", "1"))),
+    selected: sides(str("selected-border-width", "0"))
+  };
+  const reserved = [0, 1, 2, 3].map((i3) => Math.max(widths.normal[i3] ?? 0, widths.hover[i3] ?? 0, widths.focus[i3] ?? 0));
+  const border = (state, color, alpha) => widths[state].every((w) => w === 0) ? "transparent" : tint(roleColor(color), alpha);
+  const pxList = (w) => w.map((n2) => `${String(n2)}px`).join(" ");
+  const selectedColor = str("selected-color", "foreground");
+  return [
+    `--ctl-bg: ${tint(roleColor(normalColor), num("normal-fill-alpha", 0.04))};`,
+    `--ctl-border: ${border("normal", normalBorder, normalBorderAlpha)};`,
+    `--ctl-border-width: ${pxList(reserved)};`,
+    `--ctl-normal-border-width: ${pxList(widths.normal)};`,
+    // The switch knob is inset from the track's outer edge, so it needs the side widths.
+    `--ctl-normal-border-left: ${String(widths.normal[3])}px;`,
+    `--ctl-hover: ${tint(roleColor(hoverColor), hoverFill)};`,
+    `--ctl-hover-border: ${border("hover", hoverBorder, hoverBorderAlpha)};`,
+    // Focus mirrors hover unless the theme sets it, as in the shell.
+    `--ctl-focus-bg: ${tint(roleColor(str("focus-color", hoverColor)), num("focus-fill-alpha", hoverFill))};`,
+    `--ctl-focus-border: ${border("focus", str("focus-border", hoverBorder), num("focus-border-alpha", hoverBorderAlpha))};`,
+    `--ctl-pressed: ${tint(roleColor(str("pressed-color", hoverColor)), num("pressed-fill-alpha", 0.22))};`,
+    // Selected: the on state of a toggle switch (track fill and border, knob color).
+    `--ctl-selected-bg: ${tint(roleColor(selectedColor), num("selected-fill-alpha", 0.18))};`,
+    `--ctl-selected-border: ${border("selected", str("selected-border", selectedColor), num("selected-border-alpha", 1))};`,
+    `--ctl-selected-border-width: ${pxList(widths.selected)};`,
+    `--ctl-selected-border-right: ${String(widths.selected[1])}px;`,
+    `--knob-on: ${roleColor(selectedColor)};`,
+    // The shell has no disabled token: a third of the normal border marks a control as off.
+    `--ctl-off-border: ${tint(roleColor(normalBorder), normalBorderAlpha / 3)};`
+  ].join(" ");
+}
+function omarchyThemeCss(theme) {
+  if (theme === null) return "";
+  const vars = Object.entries(theme.colors).map(([key2, value]) => `--om-${key2.replace(/_/g, "-")}: ${value};`).join(" ");
+  return `:root { color-scheme: ${theme.mode}; ${vars} } html.omarchy { ${controlVars(theme.controls)} }`;
+}
+var FOLDER_CANDIDATES = [
+  "scalable/places/folder.svg",
+  "48x48@2x/places/folder.png",
+  "96x96/places/folder.png",
+  "64x64@2x/places/folder.png",
+  "256x256/places/folder.png",
+  "64x64/places/folder.png",
+  "48x48/places/folder.png"
+];
+var ICON_THEME_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+function defaultIconRoots(env = process.env) {
+  const data = env["XDG_DATA_HOME"];
+  const home = env["HOME"] ?? homedir();
+  return [data !== void 0 && data !== "" ? join(data, "icons") : join(home, ".local", "share", "icons"), join(home, ".icons"), "/usr/share/icons"];
+}
+function resolveFolderIcon(themeDir, roots = defaultIconRoots()) {
+  let first = "";
+  try {
+    first = readFileSync5(join(themeDir, "icons.theme"), "utf8").trim();
+  } catch {
+  }
+  const queue = [first, "Adwaita", "hicolor"].filter((name) => ICON_THEME_NAME.test(name));
+  const seen = /* @__PURE__ */ new Set();
+  while (queue.length > 0) {
+    const name = queue.shift() ?? "";
+    if (seen.has(name)) continue;
+    seen.add(name);
+    for (const root of roots) {
+      for (const rel of FOLDER_CANDIDATES) {
+        const path23 = join(root, name, rel);
+        if (existsSync5(path23)) return { path: path23, type: rel.endsWith(".svg") ? "image/svg+xml" : "image/png" };
+      }
+    }
+    for (const root of roots) {
+      try {
+        const inherits = /^Inherits\s*=\s*(.+)$/m.exec(readFileSync5(join(root, name, "index.theme"), "utf8"));
+        if (inherits?.[1] !== void 0) {
+          const parents = inherits[1].split(",").map((p2) => p2.trim()).filter((p2) => ICON_THEME_NAME.test(p2));
+          queue.splice(0, 0, ...parents);
+          break;
+        }
+      } catch {
+      }
+    }
+  }
+  return null;
 }
 
 // src/tray/detailPage.ts
+function systemLocale(env = process.env) {
+  for (const key2 of ["LC_ALL", "LC_TIME", "LANG"]) {
+    const value = env[key2];
+    if (value === void 0 || value === "") continue;
+    const tag = (value.split(".")[0] ?? "").split("@")[0]?.replace(/_/g, "-") ?? "";
+    if (tag === "" || tag === "C" || tag === "POSIX") return null;
+    try {
+      return Intl.DateTimeFormat.supportedLocalesOf([tag])[0] ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 var DetailPageServer = class {
-  constructor(target) {
+  constructor(target, options = {}) {
     this.target = target;
+    this.themePath = options.themePath ?? omarchyColorsPath();
+    this.iconRoots = options.iconRoots ?? defaultIconRoots();
+    this.roots = options.roots ?? null;
+    this.locale = options.locale === void 0 ? systemLocale() : options.locale;
   }
   target;
   server = null;
   token = randomBytes3(16).toString("hex");
   port = 0;
+  themePath;
+  iconRoots;
+  roots;
+  locale;
   get url() {
     return `http://127.0.0.1:${String(this.port)}/${this.token}/`;
   }
@@ -23253,7 +23721,20 @@ var DetailPageServer = class {
     const route = parts.slice(1).join("/");
     try {
       if (req.method === "GET" && route === "") {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(detailDocument(packageVersion()));
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(renderPage(this.themeCss(), this.folderIcon()?.path ?? ""));
+        return;
+      }
+      if (req.method === "GET" && route === "api/theme") {
+        this.json(res, { css: this.themeCss(), icon: this.folderIcon()?.path ?? "" });
+        return;
+      }
+      if (req.method === "GET" && route === "icon/folder") {
+        const icon = this.folderIcon();
+        if (icon === null) {
+          res.writeHead(404).end("not found");
+          return;
+        }
+        res.writeHead(200, { "content-type": icon.type, "cache-control": "no-store" }).end(readFileSync6(icon.path));
         return;
       }
       if (req.method === "GET" && route === "api/state") {
@@ -23261,7 +23742,11 @@ var DetailPageServer = class {
           status: this.target.getStatus(),
           conflicts: this.target.listConflicts(),
           quarantine: this.target.listQuarantine(),
-          recycle: this.target.listRecycle().filter((r2) => r2.kind === "file")
+          recycle: this.target.listRecycle().filter((r2) => r2.kind === "file"),
+          roots: this.roots,
+          locale: this.locale,
+          // The package version of the engine process serving this page, shown in the stats.
+          version: packageVersion()
         });
         return;
       }
@@ -23316,6 +23801,13 @@ var DetailPageServer = class {
         throw new Error(`unknown action ${name}`);
     }
   }
+  /** Read on every request so a theme switch shows up without restarting the engine. */
+  themeCss() {
+    return omarchyThemeCss(readOmarchyTheme(this.themePath));
+  }
+  folderIcon() {
+    return resolveFolderIcon(dirname2(this.themePath), this.iconRoots);
+  }
   json(res, data, status = 200) {
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(data));
   }
@@ -23340,89 +23832,278 @@ function readJson(req) {
     req.on("error", reject);
   });
 }
-function detailDocument(version) {
-  const versionLine = version === null ? "" : `<p class="muted">Version ${escapeHtml(version)}</p>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proton Drive Sync</title>
+var SYNC_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 6.5A5.5 5.5 0 0 0 3.4 4.3"/><path d="M2.5 9.5a5.5 5.5 0 0 0 10.1 2.2"/><path d="M3 1.6v2.9h2.9"/><path d="M13 14.4v-2.9h-2.9"/></svg>';
+function renderPage(themeCss, icon) {
+  return `<!doctype html><html lang="en"${themeCss === "" ? "" : ' class="omarchy"'}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Proton Drive Sync</title>
 <style>
 :root {
+  --title-icon-h: 3.2rem;
+  --title-icon-y: -0.53rem;
   --pds-mint: #cdfae4;
   --pds-lavender: #d0d8fc;
-  --pds-card: #fcfdfe;
   --pds-ink: #2c3343;
   --pds-cyan: #2cd1ec;
   --pds-blue: #42aefc;
   --pds-line: #e4eaf3;
   --pds-muted: #5c6b80;
+  --pds-card: #fcfdfe;
+  --page-bg: linear-gradient(90deg, var(--pds-mint), var(--pds-lavender));
+  --fg: var(--pds-ink);
+  --muted: var(--pds-muted);
+  --accent: var(--pds-blue);
+  --heading: var(--pds-ink);
+  --line: var(--pds-line);
+  --divider: var(--pds-line);
+  --state-fg: var(--pds-muted);
+  --stat-label: var(--pds-muted);
+  --ctl-bg: #fff;
+  --btn-bg: var(--ctl-bg);
+  --ctl-hover: #f3f7fc;
+  --ctl-border: #c9d4e4;
+  --ctl-off-border: #e1e7f0;
+  --ctl-off-fg: #a9b4c4;
+  --ctl-border-width: 1px;
+  --ctl-hover-border: var(--ctl-border);
+  --ctl-focus-bg: var(--ctl-hover);
+  --ctl-focus-border: var(--accent);
+  --ctl-pressed: #e8eef7;
+  --ctl-normal-border-width: 1px;
+  --ctl-selected-bg: var(--accent);
+  --ctl-selected-border: var(--accent);
+  --ctl-selected-border-width: 1px;
+  --ctl-normal-border-left: 1px;
+  --ctl-selected-border-right: 1px;
+  --knob-on: #fff;
+  --knob-off: #9aa8bb;
+  --input-border: #d5deea;
+  --primary-bg: var(--pds-cyan);
+  --primary-fg: #07323a;
+  --track: #e6eef8;
+  --warn-bg: #fff8e8;
+  --warn-border: transparent;
+  --danger-bg: #ffe8ea;
+  --danger-fg: #6d2430;
+  --danger-border: transparent;
+  /* The state line's warning and error tones: amber and red that read on white. */
+  --status-warn: #9a5b00;
+  --status-danger: #c0262d;
+  --radius-box: 16px;
+  --radius-pill: 999px;
+  --font: ui-sans-serif, system-ui, sans-serif;
+  --font-size: 15px;
+}
+/* Omarchy: the active theme's colors (--om-*, from colors.toml) in the shell's
+   flat style: square corners, monospace, and the bar's control fills. */
+html.omarchy {
+  --page-bg: var(--om-background);
+  --fg: var(--om-foreground);
+  --muted: var(--om-light-foreground, color-mix(in srgb, var(--om-foreground) 65%, var(--om-background)));
+  --accent: var(--om-accent);
+  --heading: var(--om-accent);
+  --line: color-mix(in srgb, var(--om-foreground) 12%, transparent);
+  --divider: var(--om-muted, color-mix(in srgb, var(--om-foreground) 30%, var(--om-background)));
+  /* The shell's dim text: Qt.darker(foreground, 1.4). */
+  --state-fg: color-mix(in srgb, var(--om-foreground) 71%, black);
+  /* The Wi-Fi panel's InfoLabel: foreground at 60% opacity. */
+  --stat-label: color-mix(in srgb, var(--om-foreground) 60%, transparent);
+  /* --ctl-* fills, borders and widths come from the theme's shell.toml [controls].
+     Buttons are unfilled at rest, like the shell's bordered buttons. */
+  --btn-bg: transparent;
+  --knob-off: color-mix(in srgb, var(--om-foreground) 80%, black);
+  --ctl-off-fg: color-mix(in srgb, var(--om-foreground) 35%, transparent);
+  --input-border: var(--ctl-border);
+  --primary-bg: var(--om-accent);
+  --primary-fg: var(--om-background);
+  --track: color-mix(in srgb, var(--om-foreground) 10%, transparent);
+  --warn-bg: color-mix(in srgb, var(--om-yellow, var(--om-accent)) 10%, transparent);
+  --warn-border: var(--om-yellow, var(--om-accent));
+  --danger-bg: color-mix(in srgb, var(--om-red, var(--om-accent)) 14%, transparent);
+  --danger-fg: var(--om-foreground);
+  --danger-border: var(--om-red, var(--om-accent));
+  /* The state line's warning and error tones: the theme's yellow and red. */
+  --status-warn: var(--om-yellow, var(--om-accent));
+  --status-danger: var(--om-red, var(--om-accent));
+  --radius-box: 0;
+  --radius-pill: 0;
+  --font: monospace;
+  --font-size: 13px;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
   min-height: 100vh;
-  color: var(--pds-ink);
-  font: 15px/1.45 ui-sans-serif, system-ui, sans-serif;
-  background: linear-gradient(90deg, var(--pds-mint), var(--pds-lavender));
+  color: var(--fg);
+  font: var(--font-size)/1.45 var(--font);
+  background: var(--page-bg);
 }
 .wrap { max-width: 960px; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
-h1 { font-size: 1.6rem; margin: 0 0 .35rem; letter-spacing: -0.02em; }
-h2 { font-size: 1.05rem; margin: 0; }
-.card {
-  background: var(--pds-card);
-  border-radius: 20px;
-  padding: 1rem 1.15rem;
-  margin: 0 0 .9rem;
-  box-shadow: 0 10px 30px rgba(44, 51, 67, 0.08);
+/* Header like a shell panel hero: folder icon, then the title with the engine
+   state under it in the shell's caption style. text-box trims both lines to
+   their capitals so the icon can be sized to span exactly from just above the
+   title to the bottom of the state line. */
+h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.02em; text-box: trim-both cap alphabetic; }
+.title-block { display: flex; align-items: flex-start; gap: .55rem; min-width: 0; }
+.title-icon { flex: none; height: var(--title-icon-h); width: auto; margin-top: var(--title-icon-y); }
+.title-text { display: flex; flex-direction: column; gap: .65rem; min-width: 0; }
+.state { font-size: .833em; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--state-fg); line-height: 1; text-box: trim-both cap alphabetic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The state line alternates between the state and its details, fading out and back in like
+   the Wi-Fi panel's caption; warnings and errors take their own colours. */
+.state { transition: opacity 260ms ease-in; }
+.state.fading { opacity: 0; transition: opacity 180ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .state, .state.fading { transition: none; } }
+.state[data-tone="warn"] { color: var(--status-warn); }
+.state[data-tone="danger"] { color: var(--status-danger); }
+/* Sync on/off switch, drawn like the shell's ToggleSwitch: normal track when off,
+   selected fill and knob when on, a hover ring around it, 120ms slide. */
+.title-side { display: flex; align-items: center; gap: .9rem; }
+.switch {
+  position: relative; flex: none; width: 42px; height: 22px; padding: 0; cursor: pointer;
+  border-style: solid; border-width: var(--ctl-normal-border-width); border-color: var(--ctl-border);
+  background: var(--ctl-bg); border-radius: var(--radius-pill);
+  transition: background-color 120ms, border-color 120ms;
 }
-.status-row, .actions, .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .6rem; }
-.pill, .btn, .note, .toolbar input { border-radius: 999px; }
-.pill { display: inline-block; background: #e7f7ff; font-weight: 650; padding: .2rem .75rem; }
-#glance { font-weight: 650; color: var(--pds-blue); }
-#reason, .pager, .empty, .muted { color: var(--pds-muted); }
-.reading { margin: .2rem 0; }
+.switch .knob {
+  /* 3px from the track's outer edge, as in the shell; offsets are from inside the border. */
+  position: absolute; top: 50%; left: calc(3px - var(--ctl-normal-border-left)); width: 16px; height: 16px; transform: translateY(-50%);
+  background: var(--knob-off); border-radius: var(--radius-pill);
+  transition: left 120ms cubic-bezier(.33, 1, .68, 1), background-color 120ms;
+}
+.switch[aria-checked="true"] { background: var(--ctl-selected-bg); border-color: var(--ctl-selected-border); border-width: var(--ctl-selected-border-width); }
+.switch[aria-checked="true"] .knob { left: calc(100% - 19px + var(--ctl-selected-border-right)); background: var(--knob-on); }
+.switch:hover { outline: 1px solid var(--ctl-hover-border); outline-offset: 5px; }
+.switch:focus-visible { outline: 1px solid var(--accent); outline-offset: 5px; }
+.title-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: 0 0 .9rem; }
+/* The section heading row; the heading is trimmed to its cap height so spacing is
+   measured from the letters, not the line box. */
+.section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: .6rem 1rem; margin: 0; }
+h2 { font-size: 1.05rem; margin: 0; color: var(--heading); text-transform: uppercase; text-box: trim-both cap alphabetic; }
+/* Without a theme, the header and each section are white cards on the gradient. */
+html:not(.omarchy) header, html:not(.omarchy) main > section:not([hidden]) {
+  background: var(--pds-card); border-radius: 20px; padding: 1rem 1.15rem; box-shadow: 0 10px 30px rgba(44, 51, 67, 0.08);
+}
+html:not(.omarchy) main > section:not([hidden]) { margin-top: .9rem; }
+/* The held plan's warning box is its card, rather than a box inside a white card. */
+html:not(.omarchy) main > section#held { background: none; padding: 0; box-shadow: none; }
+/* Proceed and Reject: flush right on the held plan's filter row. */
+.held-actions { margin-left: auto; }
+html:not(.omarchy) #held > .warn { border-radius: 20px; padding: 1rem 1.15rem; box-shadow: 0 10px 30px rgba(44, 51, 67, 0.08); }
+/* Omarchy, like the shell's panels: no boxes, each section sits under a divider. */
+html.omarchy main > section:not([hidden]) { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--divider); }
+.actions, .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .6rem; }
+.btn, .toolbar input { border-radius: var(--radius-pill); }
+.empty, .muted { color: var(--muted); }
+#lines:not(:empty) { margin-top: .9rem; }
+/* Stats laid out like the top of the shell's Wi-Fi panel: label/value pairs in
+   two equal halves, labels dimmed, values right-aligned, small body size. */
+.stats { font-size: .917em; }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 40px; }
+.stats .half { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 20px; row-gap: 4px; align-content: start; }
+.stats .k { color: var(--stat-label); white-space: nowrap; }
+.stats .v { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* A blank row: one line plus the row gap after it adds up to one full row. */
+.stats .gap { grid-column: 1 / -1; height: calc(1lh - 4px); }
+@media (max-width: 560px) { .stats { grid-template-columns: minmax(0, 1fr); row-gap: 4px; } }
 .btn {
-  border: 1px solid #c9d4e4;
-  background: #fff;
-  color: var(--pds-ink);
+  /* Longhands: the reserved width can be a per-side list, which the border shorthand rejects. */
+  border-style: solid;
+  border-width: var(--ctl-border-width);
+  border-color: var(--ctl-border);
+  background: var(--btn-bg);
+  color: var(--fg);
+  font: inherit;
   padding: .4rem .9rem;
   cursor: pointer;
 }
-.btn.primary { background: var(--pds-cyan); border-color: var(--pds-cyan); color: #07323a; font-weight: 650; }
-.btn:disabled { opacity: .45; cursor: default; }
-.toolbar { margin: .55rem 0 .7rem; }
-.toolbar input { border: 1px solid #d5deea; padding: .35rem .8rem; min-width: 12rem; color: var(--pds-ink); background: #fff; }
+/* Control states in the shell's order: pressed, then focus, then hover, each fading over 120ms. */
+.btn, .toolbar input { transition: background-color 120ms, border-color 120ms; }
+.btn:hover:not(:disabled), .toolbar input:hover:not(:disabled) { background: var(--ctl-hover); border-color: var(--ctl-hover-border); }
+.btn:focus-visible:not(:disabled), .toolbar input:focus:not(:disabled) { background: var(--ctl-focus-bg); border-color: var(--ctl-focus-border); }
+.btn:active:not(:disabled) { background: var(--ctl-pressed); }
+/* An accent outline on top of the theme's focus state keeps keyboard focus easy to see. */
+.btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.btn.primary { background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary-fg); font-weight: 650; }
+.btn.primary:hover:not(:disabled), .btn.primary:active:not(:disabled), .btn.primary:focus-visible { background: var(--primary-bg); border-color: var(--primary-bg); filter: brightness(1.08); }
+/* Disabled controls drop the fill and fade the border and text, so they read as off next to live ones. */
+.btn:disabled, .toolbar input:disabled { background: transparent; border-color: var(--ctl-off-border); color: var(--ctl-off-fg); cursor: default; }
+/* A section's body: a line saying what it holds, then the controls on the right
+   with the range under them, then the list. */
+.intro { margin: .7rem 0 0; font-size: .917em; color: var(--stat-label); }
+.section-body .toolbar, .warn .toolbar { justify-content: flex-start; margin-top: .6rem; }
+/* Under a table: the item range on the left, Previous/Next on the right as link text. */
+.table-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-top: .5rem; }
+.pager { margin: 0; white-space: nowrap; }
+/* The range reads like the table's column headers: same dimmed colour and weight. */
+.pager, th { font-weight: 600; color: var(--stat-label); }
+.pages { display: flex; gap: 1.25rem; white-space: nowrap; }
+.link { all: unset; cursor: pointer; color: var(--accent); }
+.link:hover:not(:disabled) { text-decoration: underline; }
+.link:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.link:disabled { color: var(--ctl-off-fg); cursor: default; }
+.toolbar { margin: 0; }
+.toolbar input { border-style: solid; border-width: var(--ctl-border-width); border-color: var(--input-border); padding: .4rem .9rem .4rem 2.1rem; min-width: 12rem; color: var(--fg); background: var(--ctl-bg); font: inherit; }
+/* The magnifier sits inside the filter box on the left; the placeholder is the foreground
+   at 58%, like the shell's search fields. */
+.search { position: relative; display: inline-flex; align-items: center; }
+.search svg { position: absolute; left: .7rem; width: 14px; height: 14px; color: var(--fg); opacity: .58; pointer-events: none; }
+.toolbar input::placeholder { color: var(--fg); opacity: .58; }
 .scroll { overflow-x: auto; }
+.scroll:not(:empty) { margin-top: .5rem; }
 table { border-collapse: collapse; width: 100%; }
-td, th { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid var(--pds-line); vertical-align: top; }
-.bar { height: 8px; background: #e6eef8; border-radius: 999px; min-width: 6rem; }
-.bar > div { height: 8px; background: var(--pds-blue); border-radius: 999px; }
-.warn { background: #fff8e8; border-radius: 16px; padding: .8rem 1rem; }
-.banner { background: #ffe8ea; color: #6d2430; border-radius: 16px; padding: .65rem 1rem; margin: 0 0 .9rem; }
-.note { display: inline-block; background: #fff; padding: .15rem .65rem; }
+td, th { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+/* Table helpers: a cell that takes the leftover width (max-width: 0 lets it shrink), text
+   truncated at the start so a path keeps its file name, cells that never wrap, and a
+   smaller second line. */
+td.fill { width: 100%; max-width: 0; }
+.trunc-start { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.trunc-start bdi { direction: ltr; unicode-bidi: isolate; }
+.nowrap { white-space: nowrap; }
+.sub { font-size: .85em; color: var(--stat-label); }
+/* Icon buttons follow the shell's plain Button (the Wi-Fi panel's QR code and speed test):
+   no fill or border at rest, the theme's hover/pressed states, an 18px icon (the shell's
+   subtitle size x 1.5). Padding is an even 5px so the hover box sits square around the icon.
+   The border keeps its width so nothing shifts. */
+.btn.icon { display: inline-flex; align-items: center; justify-content: center; padding: 5px; background: transparent; border-color: transparent; }
+.btn.icon svg { width: 18px; height: 18px; }
+.btn.icon:disabled { border-color: transparent; }
+/* Sync now as the call to action: filled like the other primary buttons. Without the fill its
+   icon, drawn in the primary text colour, would vanish against a dark theme's background. */
+.btn.icon.primary { background: var(--primary-bg); border-color: var(--primary-bg); color: var(--primary-fg); }
+/* Action buttons sit in the middle of their row rather than at the top. */
+td.actions-cell { vertical-align: middle; }
+.actions-cell .btn + .btn { margin-left: .35rem; }
+/* A lone row action (Dismiss, Release) sits flush right in its column. */
+td.actions-cell.end { text-align: right; }
+/* Outer cells sit flush so table text lines up with headings and inputs. */
+td:first-child, th:first-child { padding-left: 0; }
+td:last-child, th:last-child { padding-right: 0; }
+.bar { height: 8px; background: var(--track); border-radius: var(--radius-pill); min-width: 6rem; }
+.bar > div { height: 8px; background: var(--accent); border-radius: var(--radius-pill); }
+.warn { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius-box); padding: .8rem 1rem; }
+.banner { background: var(--danger-bg); color: var(--danger-fg); border: 1px solid var(--danger-border); border-radius: var(--radius-box); padding: .65rem 1rem; margin: 1rem 0 0; }
+/* Lost connection: the notice leads the page and the data that may be stale dims. */
+#connection-lost { margin: 0 0 1.25rem; }
+body.stale .title-row, body.stale .actions, body.stale #lines, body.stale main > section { opacity: .45; }
 pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0; font-size: .85rem; }
 [hidden] { display: none !important; }
-</style></head><body>
+</style>
+<style id="omarchy-theme">${themeCss}</style></head><body>
 <main class="wrap">
-<header class="card">
-<h1>Proton Drive Sync</h1>
-${versionLine}
-<p class="status-row"><span class="pill" id="state"></span><span id="glance"></span><span id="reason"></span></p>
-<p id="flags"></p>
-<p class="actions"><button type="button" class="btn" id="act-pause" onclick="act('pause')">Pause</button><button type="button" class="btn" id="act-resume" onclick="act('resume')">Resume</button><button type="button" class="btn" id="act-sync" onclick="act('sync')">Sync now</button></p>
+<p id="connection-lost" class="banner" role="alert" hidden>Lost connection to Proton Drive Sync, so the details below may be out of date. Reopen this page from the Proton Drive panel.</p>
+<header>
+<div class="title-row"><div class="title-block"><img class="title-icon" id="title-icon" src="icon/folder" alt="" data-icon="${encodeURIComponent(icon)}"${icon === "" ? " hidden" : ""}><div class="title-text"><h1>Proton Drive Sync</h1><span class="state" id="state"></span></div></div><div class="title-side"><button type="button" class="btn icon" id="act-sync" onclick="act('sync')" title="Sync now" aria-label="Sync now">${SYNC_ICON}</button><button type="button" role="switch" class="switch" id="sync-toggle" aria-checked="true" aria-label="Sync"><span class="knob"></span></button></div></div>
+<div id="lines"></div>
 </header>
 <p id="action-error" class="banner" hidden></p>
-<section class="card" id="held" hidden></section>
-<section class="card" id="conflicts"></section>
-<section class="card" id="quarantine"></section>
-<section class="card" id="transfers"></section>
-<section class="card" id="lines"></section>
-<section class="card" id="proton-documents"></section>
-<section class="card" id="recycle"></section>
+<section id="held" hidden></section>
+<section id="conflicts"></section>
+<section id="quarantine"></section>
+<section id="transfers"></section>
+<section id="proton-documents"></section>
+<section id="recycle"></section>
 </main>
 <script>
 ${clientScript()}
 </script></body></html>`;
-}
-function escapeHtml(value) {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
 // src/cli/output.ts
@@ -23448,7 +24129,7 @@ function formatTable(rows) {
 
 // src/audit/logger.ts
 init_redact();
-import { appendFileSync, closeSync as closeSync2, existsSync as existsSync5, fstatSync, mkdirSync as mkdirSync7, openSync as openSync3, readdirSync as readdirSync3, readFileSync as readFileSync5, renameSync as renameSync4, statSync as statSync7, unlinkSync as unlinkSync3 } from "node:fs";
+import { appendFileSync, closeSync as closeSync2, existsSync as existsSync6, fstatSync, mkdirSync as mkdirSync7, openSync as openSync3, readdirSync as readdirSync3, readFileSync as readFileSync7, renameSync as renameSync4, statSync as statSync7, unlinkSync as unlinkSync3 } from "node:fs";
 import path17 from "node:path";
 var ROTATED_SUFFIX = /^(.*)\.(\d{8}T\d{6}\d{3}Z)(?:-(\d+))?\.log$/;
 var AuditLog = class {
@@ -23505,7 +24186,7 @@ var AuditLog = class {
     }
     const stamp = this.now().toISOString().replace(/[-:]/g, "").replace(".", "");
     let target = path17.join(this.dir, `${this.baseName}.${stamp}.log`);
-    while (existsSync5(target)) {
+    while (existsSync6(target)) {
       this.rotationCounter += 1;
       target = path17.join(this.dir, `${this.baseName}.${stamp}-${this.rotationCounter}.log`);
     }
@@ -23517,14 +24198,14 @@ var AuditLog = class {
       const m2 = ROTATED_SUFFIX.exec(f2);
       return m2 !== null && m2[1] === this.baseName;
     }).sort().map((f2) => path17.join(this.dir, f2));
-    return existsSync5(this.activePath) ? [...rotated, this.activePath] : rotated;
+    return existsSync6(this.activePath) ? [...rotated, this.activePath] : rotated;
   }
   /** Read every entry across all files, oldest first. Malformed lines are reported, not dropped silently. */
   readAll() {
     const entries = [];
     const malformed = [];
     for (const file of this.files()) {
-      const text = readFileSync5(file, "utf8");
+      const text = readFileSync7(file, "utf8");
       for (const line of text.split("\n")) {
         if (line.trim() === "") continue;
         try {
@@ -23557,7 +24238,7 @@ init_paths();
 // src/config/secretStore.ts
 init_redact();
 import { execFile } from "node:child_process";
-import { existsSync as existsSync6, mkdirSync as mkdirSync8, readFileSync as readFileSync6, renameSync as renameSync5, unlinkSync as unlinkSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync8, readFileSync as readFileSync8, renameSync as renameSync5, unlinkSync as unlinkSync4, writeFileSync as writeFileSync2 } from "node:fs";
 import path18 from "node:path";
 var SECRET_SERVICE = "proton-drive-sync";
 var SecretStoreUnavailableError = class extends Error {
@@ -23632,8 +24313,8 @@ var UnsafeFileSecretStore = class {
   kind = "unsafe_file";
   file;
   read() {
-    if (!existsSync6(this.file)) return {};
-    const parsed = JSON.parse(readFileSync6(this.file, "utf8"));
+    if (!existsSync7(this.file)) return {};
+    const parsed = JSON.parse(readFileSync8(this.file, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
     const out2 = {};
     for (const [k, v2] of Object.entries(parsed)) {
@@ -23683,7 +24364,7 @@ init_logger();
 
 // src/remote/proton/bootstrap.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-import { existsSync as existsSync7, mkdirSync as mkdirSync10, readFileSync as readFileSync7, writeFileSync as writeFileSync3 } from "node:fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync10, readFileSync as readFileSync9, writeFileSync as writeFileSync3 } from "node:fs";
 import path20 from "node:path";
 
 // node_modules/@protontech/crypto/src/pmcrypto/serverTime.ts
@@ -23880,9 +24561,9 @@ ArrayStream.prototype.getReader = function() {
     }
   };
 };
-ArrayStream.prototype.readToEnd = async function(join) {
+ArrayStream.prototype.readToEnd = async function(join2) {
   await this[doneWritingPromise];
-  const result = join(this.slice(this[readingIndex]));
+  const result = join2(this.slice(this[readingIndex]));
   this.length = 0;
   return result;
 };
@@ -24084,14 +24765,14 @@ Reader.prototype.unshift = function(...values) {
   }
   this[externalBuffer].unshift(...values.filter((value) => value && value.length));
 };
-Reader.prototype.readToEnd = async function(join = concat) {
+Reader.prototype.readToEnd = async function(join2 = concat) {
   const result = [];
   while (true) {
     const { done, value } = await this.read();
     if (done) break;
     result.push(value);
   }
-  return join(result);
+  return join2(result);
 };
 function toStream(input) {
   if (isStream(input)) {
@@ -24514,12 +25195,12 @@ function slice(input, begin = 0, end = Infinity) {
   }
   return input.slice(begin, end);
 }
-async function readToEnd(input, join = concat) {
+async function readToEnd(input, join2 = concat) {
   if (isArrayStream(input)) {
-    return input.readToEnd(join);
+    return input.readToEnd(join2);
   }
   if (isStream(input)) {
-    return getReader(input).readToEnd(join);
+    return getReader(input).readToEnd(join2);
   }
   return input;
 }
@@ -52144,9 +52825,9 @@ ArrayStream2.prototype.getReader = function() {
     }
   };
 };
-ArrayStream2.prototype.readToEnd = async function(join) {
+ArrayStream2.prototype.readToEnd = async function(join2) {
   await this[doneWritingPromise2];
-  const result = join(this.slice(this[readingIndex2]));
+  const result = join2(this.slice(this[readingIndex2]));
   this.length = 0;
   return result;
 };
@@ -52352,14 +53033,14 @@ Reader2.prototype.unshift = function(...values) {
   }
   this[externalBuffer2].unshift(...values.filter((value) => value && value.length));
 };
-Reader2.prototype.readToEnd = async function(join = concat2) {
+Reader2.prototype.readToEnd = async function(join2 = concat2) {
   const result = [];
   while (true) {
     const { done, value } = await this.read();
     if (done) break;
     result.push(value);
   }
-  return join(result);
+  return join2(result);
 };
 
 // node_modules/@openpgp/web-stream-tools/lib/streams.js
@@ -52762,12 +53443,12 @@ function slice2(input, begin = 0, end = Infinity) {
   }
   return input.slice(begin, end);
 }
-async function readToEnd2(input, join = concat2) {
+async function readToEnd2(input, join2 = concat2) {
   if (isArrayStream2(input)) {
-    return input.readToEnd(join);
+    return input.readToEnd(join2);
   }
   if (isStream2(input)) {
-    return getReader2(input).readToEnd(join);
+    return getReader2(input).readToEnd(join2);
   }
   return input;
 }
@@ -70685,9 +71366,9 @@ function accountUrlFromBaseUrl(baseUrl) {
 }
 function getOrCreateClientUid(dataDir, logger) {
   const file = path20.join(dataDir, "clientUid.json");
-  if (existsSync7(file)) {
+  if (existsSync8(file)) {
     try {
-      const parsed = JSON.parse(readFileSync7(file, "utf8"));
+      const parsed = JSON.parse(readFileSync9(file, "utf8"));
       if (typeof parsed.clientUid === "string" && parsed.clientUid.startsWith(`${CLIENT_UID_PREFIX}-`)) return parsed.clientUid;
     } catch (error) {
       logger.error("Could not read client UID file; generating a new one", error);
@@ -70965,7 +71646,7 @@ async function run(deps, flags, json) {
   throttle = (s2) => {
     engine.onThrottle(s2);
   };
-  const page = new DetailPageServer(bundle.controlTarget);
+  const page = new DetailPageServer(bundle.controlTarget, { roots: { local: config2.localRoot, remote: config2.remoteRoot } });
   try {
     await page.listen();
   } catch (error) {

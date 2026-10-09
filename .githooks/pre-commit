@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# The plugin runs the committed dist/cli/main.js, not the TypeScript sources.
+# A commit that changes the engine rebuilds that file and includes it.
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+inputs=(src package.json package-lock.json scripts/build.mjs)
+staged=$(git diff --cached --name-only -- "${inputs[@]}")
+if [[ -z "$staged" ]]; then
+  exit 0
+fi
+
+unstaged=$(git diff --name-only -- "${inputs[@]}")
+untracked=$(git ls-files --others --exclude-standard -- "${inputs[@]}")
+if [[ -n "$unstaged" || -n "$untracked" ]]; then
+  echo "pre-commit: stage the engine sources before committing." >&2
+  echo "The bundle is built from the working tree and must match the commit." >&2
+  [[ -z "$unstaged" ]] || printf '%s\n' "$unstaged" >&2
+  [[ -z "$untracked" ]] || printf '%s\n' "$untracked" >&2
+  exit 1
+fi
+
+npm run build
+git add -- dist/cli/main.js
