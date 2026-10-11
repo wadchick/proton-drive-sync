@@ -5,9 +5,7 @@
 import { parseArgs } from 'node:util';
 
 import type { LogLevel } from '../remote/proton/logger.js';
-import { CliError, dispatch, type CommandDeps, type ParsedArgs } from './commands.js';
-import { prompt } from './prompt.js';
-import { createRuntime, loadContext } from './runtime.js';
+import type { CommandDeps, ParsedArgs } from './commands.js';
 
 export function parseCli(argv: string[]): ParsedArgs {
   const { values, positionals } = parseArgs({
@@ -40,6 +38,11 @@ export function parseCli(argv: string[]): ParsedArgs {
 
 async function main(argv: string[]): Promise<number> {
   const args = parseCli(argv);
+  const [{ CliError, dispatch }, { prompt }, { createRuntime, loadContext }] = await Promise.all([
+    import('./commands.js'),
+    import('./prompt.js'),
+    import('./runtime.js'),
+  ]);
   const ctx = loadContext({ ...(args.logLevel !== undefined ? { logLevel: args.logLevel as LogLevel } : {}), quiet: args.json });
   const deps: CommandDeps = {
     ctx,
@@ -61,7 +64,15 @@ async function main(argv: string[]): Promise<number> {
       });
     },
   };
-  return dispatch(deps, args);
+  try {
+    return await dispatch(deps, args);
+  } catch (error: unknown) {
+    if (error instanceof CliError) {
+      process.stderr.write(`error: ${error.message}\n`);
+      return error.exitCode;
+    }
+    throw error;
+  }
 }
 
 main(process.argv.slice(2))
@@ -69,11 +80,6 @@ main(process.argv.slice(2))
     process.exitCode = code;
   })
   .catch((error: unknown) => {
-    if (error instanceof CliError) {
-      process.stderr.write(`error: ${error.message}\n`);
-      process.exitCode = error.exitCode;
-      return;
-    }
     process.stderr.write(`error: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   });
