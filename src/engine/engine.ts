@@ -350,6 +350,10 @@ export class SyncEngine extends EventEmitter {
   }
 
   onFeedStatus(status: 'live' | 'degraded' | 'stopped'): void {
+    // The feed can finish a poll or report its final status while stop() is
+    // draining it. Once shutdown begins, its status is no longer useful, and
+    // publishing it can touch repositories after the runtime has closed them.
+    if (this.stopped) return;
     this.status = { ...this.status, degraded: status === 'degraded' };
     this.publish();
   }
