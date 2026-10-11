@@ -158,21 +158,32 @@ export function expandHome(p: string, home: string = os.homedir()): string {
   return p;
 }
 
-export async function setup(deps: CommandDeps, args: string[], json: boolean): Promise<number> {
-  const [localArg, remoteArg] = args;
-  if (localArg === undefined || remoteArg === undefined) throw new CliError('usage: setup <local-dir> <remote-folder>', 2);
-  const localRoot = path.resolve(expandHome(localArg));
+export async function setup(deps: CommandDeps, args: string[], json: boolean, interactive = false): Promise<number> {
+  let [localArg, remoteArg] = args;
+  const usage = 'usage: setup <local-dir> <remote-folder> | setup --interactive';
+  if ((interactive && (args.length !== 0 || json)) || (!interactive && args.length !== 2)) {
+    throw new CliError(usage, 2);
+  }
   const runtime = await deps.createRuntime();
   try {
     if (runtime.session.current !== 'logged_in') throw new CliError('not logged in; run `proton-drive-sync login` first');
-    const result = await runSetup({ localRoot, remoteRoot: remoteArg, configFile: deps.ctx.paths.configFile, remote: runtime.remote });
+    if (interactive) {
+      localArg = await deps.prompt('Local folder to sync: ');
+      remoteArg = await deps.prompt('Proton Drive folder (for example /my-files): ');
+    }
+    if (!localArg?.trim() || !remoteArg?.trim()) {
+      throw new CliError('Both folder paths are required. Run `setup` again and enter both paths.');
+    }
+    const localRoot = path.resolve(expandHome(localArg.trim()));
+    const remoteRoot = remoteArg.trim();
+    const result = await runSetup({ localRoot, remoteRoot, configFile: deps.ctx.paths.configFile, remote: runtime.remote });
     deps.ctx.config = result.config;
     deps.ctx.audit.append({ kind: 'engine', op: 'setup', message: `sync pair configured: ${localRoot} <-> ${remoteArg}`, details: { remoteRootNodeUid: result.config.remoteRootNodeUid, pairChanged: result.pairChanged } });
     out(
       deps,
       json,
       [
-        `Configured ${localRoot} <-> ${remoteArg}`,
+        `Configured ${localRoot} <-> ${remoteRoot}`,
         result.pairChanged ? 'The sync pair changed: the first run starts a fresh baseline (no deletes) and the old state is kept.' : 'Ready. Start with `proton-drive-sync run` (add --dry-run to preview).',
       ],
       { config: result.config, pairChanged: result.pairChanged },
@@ -568,7 +579,7 @@ export const USAGE = `Usage: proton-drive-sync <command> [options]
 Commands:
   login [--password]                 Sign in. Opens the browser; --password uses SRP login (TOTP supported).
   logout                             Sign out and forget the stored session.
-  setup <local-dir> <remote-folder>  Configure the sync pair, e.g. setup ~/ProtonDrive /my-files
+  setup <local-dir> <remote-folder> | setup --interactive  Configure the sync pair
   run [--dry-run] [--paused] [--no-tray]
                                      Run the sync engine (foreground). The details page is served either way.
   doctor                             Report install, sign-in, and whether the engine is running.
@@ -591,6 +602,7 @@ export interface ParsedArgs {
   rest: string[];
   json: boolean;
   password: boolean;
+  interactive: boolean;
   dryRun: boolean;
   paused: boolean;
   tray: boolean;
@@ -611,7 +623,7 @@ export async function dispatch(deps: CommandDeps, args: ParsedArgs): Promise<num
     case 'logout':
       return logout(deps, json);
     case 'setup':
-      return setup(deps, rest, json);
+      return setup(deps, rest, json, args.interactive);
     case 'run':
       return run(deps, { dryRun: args.dryRun, paused: args.paused, tray: args.tray }, json);
     case 'doctor':
