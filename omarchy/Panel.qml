@@ -195,40 +195,49 @@ Panel {
             onClicked: root.service.signIn()
           }
 
-          Column {
-            visible: root.service && root.service.chip && root.service.chip.state === "not_configured"
+          // Destroy the TextFields while the panel is closed. Qt's Wayland
+          // clipboard observer can stay active on an invisible TextField.
+          Loader {
             width: parent.width
-            spacing: Style.space(8)
-            PanelSectionHeader {
-              text: "FOLDERS TO SYNC"
-              foreground: root.barForeground
-              fontFamily: root.fontFamily
-            }
-            TextField {
-              width: parent.width
-              placeholderText: "Local folder"
-              foreground: root.barForeground
-              onTextEdited: root.localDraft = text
-            }
-            TextField {
-              width: parent.width
-              placeholderText: "Remote folder, like /my-files"
-              foreground: root.barForeground
-              onTextEdited: root.remoteDraft = text
-            }
-            ActionButton {
-              text: "Use these folders"
-              onClicked: root.service.submitSetup(root.localDraft, root.remoteDraft)
-            }
-            Text {
-              visible: root.service && root.service.setupError !== ""
-              width: parent.width
-              textFormat: Text.PlainText
-              text: root.service ? root.service.setupError : ""
-              color: root.urgent
-              wrapMode: Text.WordWrap
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
+            active: root.opened && root.service && root.service.chip && root.service.chip.state === "not_configured"
+            sourceComponent: Component {
+              Column {
+                width: parent.width
+                spacing: Style.space(8)
+                PanelSectionHeader {
+                  text: "FOLDERS TO SYNC"
+                  foreground: root.barForeground
+                  fontFamily: root.fontFamily
+                }
+                TextField {
+                  width: parent.width
+                  text: root.localDraft
+                  placeholderText: "Local folder"
+                  foreground: root.barForeground
+                  onTextEdited: root.localDraft = text
+                }
+                TextField {
+                  width: parent.width
+                  text: root.remoteDraft
+                  placeholderText: "Remote folder, like /my-files"
+                  foreground: root.barForeground
+                  onTextEdited: root.remoteDraft = text
+                }
+                ActionButton {
+                  text: "Use these folders"
+                  onClicked: root.service.submitSetup(root.localDraft, root.remoteDraft)
+                }
+                Text {
+                  visible: root.service && root.service.setupError !== ""
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: root.service ? root.service.setupError : ""
+                  color: root.urgent
+                  wrapMode: Text.WordWrap
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
+              }
             }
           }
 
