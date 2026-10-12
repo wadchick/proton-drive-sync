@@ -40,6 +40,7 @@ const REMOVAL_ALLOW_LIST: Record<string, number> = {
   'safety/recycle.ts': 1, // rmSync a recycle bucket on explicit purge (the only user-data removal)
   'state/crashChild.ts': 2, // remove the crash-detection lock file
   'state/store.ts': 4, // remove lock and superseded backup/state files
+  'tray/detailPage.ts': 1, // remove the own details launcher file when the page closes
 };
 
 describe('permanent deletion is unreachable', () => {

@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -362,12 +363,17 @@ describe('CLI', () => {
       stdout = [];
       if ((await cli('details', '--json')) === 0) {
         url = (JSON.parse(stdout.at(-1) ?? '{}') as { url?: string }).url ?? '';
-        if (url.startsWith('http://127.0.0.1:')) break;
+        if (url.startsWith('file://')) break;
       }
     }
     expect(trayStarted).toBe(false);
-    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]+\/$/);
-    const page = await fetch(url);
+    // Only the 0600 launcher file leaves the engine; the token URL is inside it.
+    expect(url).toBe(pathToFileURL(runDeps.ctx.paths.detailLauncher).href);
+    expect(statSync(runDeps.ctx.paths.detailLauncher).mode & 0o777).toBe(0o600);
+    const launcher = readFileSync(runDeps.ctx.paths.detailLauncher, 'utf8');
+    const pageUrl = /url=(http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]+\/)"/.exec(launcher)?.[1] ?? '';
+    expect(pageUrl).not.toBe('');
+    const page = await fetch(pageUrl);
     expect(page.status).toBe(200);
     expect(await page.text()).toContain('Proton Drive Sync');
 
@@ -375,5 +381,6 @@ describe('CLI', () => {
     expect(await running).toBe(0);
     expect(await cli('details')).toBe(3);
     expect(stdout.at(-1)).toMatch(/not running/);
+    expect(existsSync(runDeps.ctx.paths.detailLauncher)).toBe(false);
   });
 });

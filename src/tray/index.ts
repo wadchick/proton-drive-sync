@@ -24,7 +24,7 @@ export interface TrayOptions {
   paths: AppPaths;
   audit: AuditLog;
   logSink: LogSink;
-  /** Loopback page started by `run`. The tray opens it and does not bind another. */
+  /** Launcher file of the loopback page started by `run`; never the token URL itself. */
   detailUrl: string;
   /** Test hooks. */
   openExternal?: (target: string) => void;
@@ -97,7 +97,7 @@ export async function startTray(options: TrayOptions): Promise<TrayHandle> {
     }
   };
   engine.on('status', onStatus);
-  options.audit.append({ kind: 'engine', message: `tray started; details page at ${detailUrl}` });
+  options.audit.append({ kind: 'engine', message: 'tray started' });
 
   return {
     detailUrl,

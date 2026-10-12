@@ -5,10 +5,12 @@
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { history } from '../audit/history.js';
 import { saveConfigFile } from '../config/configFile.js';
 import { adoptedRootIdentity, readRootIdentity } from '../config/localRoot.js';
+import type { AppPaths } from '../config/paths.js';
 import { ConfigError } from '../config/schema.js';
 import { runSetup } from '../config/setup.js';
 import { ControlClient, ControlServer, type ControlTarget } from '../engine/control.js';
@@ -271,7 +273,7 @@ export async function run(deps: CommandDeps, flags: { dryRun: boolean; paused: b
   throttle = (s) => { engine.onThrottle(s); };
   const page = new DetailPageServer(bundle.controlTarget, { roots: { local: config.localRoot, remote: config.remoteRoot } });
   try {
-    await page.listen();
+    await page.listen(0, ctx.paths.detailLauncher);
   } catch (error) {
     await page.close();
     await bundle.dispose();
@@ -280,7 +282,8 @@ export async function run(deps: CommandDeps, flags: { dryRun: boolean; paused: b
   }
   const controlTarget: ControlTarget = {
     ...bundle.controlTarget,
-    detailUrl: () => page.url,
+    // Only the launcher leaves this process; the token URL stays inside its 0600 file.
+    detailUrl: () => page.launcherUrl,
   };
   const control = new ControlServer(ctx.paths.controlSocket, controlTarget);
   try {
@@ -295,7 +298,7 @@ export async function run(deps: CommandDeps, flags: { dryRun: boolean; paused: b
   let tray: { dispose(): Promise<void> } | null = null;
   if (flags.tray && deps.startTray !== undefined) {
     try {
-      tray = await deps.startTray({ engine: bundle.engine, controlTarget, detailUrl: page.url });
+      tray = await deps.startTray({ engine: bundle.engine, controlTarget, detailUrl: page.launcherUrl ?? '' });
     } catch (error) {
       ctx.audit.append({ kind: 'engine', message: `tray unavailable: ${error instanceof Error ? error.message : String(error)}; continuing headless` });
       if (!json) deps.stderr('Tray unavailable; running headless. Use `proton-drive-sync status`.');
@@ -457,15 +460,9 @@ export function doctorReport(fields: DoctorReport): DoctorReport {
   };
 }
 
-export function loopbackDetailsUrl(url: unknown): string | null {
-  if (typeof url !== 'string' || url.length === 0) return null;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1') return null;
-    return url;
-  } catch {
-    return null;
-  }
+/** The engine's answer when it is this user's launcher file, so a stray socket peer cannot make `xdg-open` fetch an arbitrary URL. */
+export function launcherDetailsUrl(url: unknown, paths: AppPaths): string | null {
+  return url === pathToFileURL(paths.detailLauncher).href ? url : null;
 }
 
 async function sessionIsStored(deps: CommandDeps): Promise<boolean> {
@@ -484,7 +481,7 @@ async function runningDetailUrl(deps: CommandDeps): Promise<string | null> {
   try {
     await client.connect(1000);
     const result = await client.request<{ url?: unknown }>({ cmd: 'details' });
-    return loopbackDetailsUrl(result.url);
+    return launcherDetailsUrl(result.url, deps.ctx.paths);
   } catch {
     return null;
   } finally {
@@ -527,14 +524,14 @@ export function details(deps: CommandDeps, json: boolean): Promise<number> {
     json,
     async (client) => {
       const result = await client.request<{ url?: unknown }>({ cmd: 'details' });
-      const url = loopbackDetailsUrl(result.url);
-      if (url === null) throw new Error('details page URL is not loopback');
+      const url = launcherDetailsUrl(result.url, deps.ctx.paths);
+      if (url === null) throw new Error('details page launcher is not this user\'s');
       return [url];
     },
     async (client) => {
       const result = await client.request<{ url?: unknown }>({ cmd: 'details' });
-      const url = loopbackDetailsUrl(result.url);
-      if (url === null) throw new Error('details page URL is not loopback');
+      const url = launcherDetailsUrl(result.url, deps.ctx.paths);
+      if (url === null) throw new Error('details page launcher is not this user\'s');
       return { url };
     },
   );
@@ -584,7 +581,7 @@ Commands:
                                      Run the sync engine (foreground). The details page is served either way.
   doctor                             Report install, sign-in, and whether the engine is running.
   status                             Show engine status (works only while \`run\` is active).
-  details                            Print the loopback details page URL of the running engine.
+  details                            Print the file URL that opens the running engine's details page.
   pause | resume | sync-now          Control the running engine.
   conflicts [resolve <id> <choice>]  List conflicts; choice: keep_local | keep_remote | keep_both
   quarantine [release <id>]          List quarantined items or release one.
