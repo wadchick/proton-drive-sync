@@ -17,8 +17,6 @@ Panel {
   property var hostWidget: null
   property var service: null
   property bool needsBuiltinBar: false
-  property string localDraft: ""
-  property string remoteDraft: ""
 
   // Rows shown per list before "more in details".
   readonly property int listLimit: 4
@@ -284,33 +282,15 @@ Panel {
           width: parent.width
           spacing: Style.space(8)
           BodyText {
-            text: "Choose a local folder and one in Proton Drive to keep in sync."
+            text: "Choose a local folder and one in Proton Drive to keep in sync. Setup runs in a terminal."
             color: root.dim
           }
-          TextField {
-            width: parent.width
-            placeholderText: "Local folder, like ~/Drive"
-            foreground: root.fg
-            onTextEdited: root.localDraft = text
-          }
-          TextField {
-            width: parent.width
-            placeholderText: "Proton Drive folder, like /my-files"
-            foreground: root.fg
-            onTextEdited: root.remoteDraft = text
-          }
           Button {
-            text: "Use these folders"
+            text: "Configure folders in terminal"
             bordered: true
             foreground: root.fg
             fontFamily: root.fontFamily
-            onClicked: root.service.submitSetup(root.localDraft, root.remoteDraft)
-          }
-          BodyText {
-            visible: root.service && root.service.setupError !== ""
-            text: root.service ? root.service.setupError : ""
-            color: root.urgent
-            font.pixelSize: Style.font.bodySmall
+            onClicked: root.service.configureFolders()
           }
         }
 

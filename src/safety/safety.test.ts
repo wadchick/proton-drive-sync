@@ -155,6 +155,7 @@ describe('no code path unlinks user data except the purge command', () => {
       ['execute/recovery.ts', 'own leftover temporary download files'],
       ['engine/control.ts', 'own control socket file'],
       ['engine/factory.ts', "a dry run's own throwaway state folder"],
+      ['cli/launcher.ts', 'own browser launcher files (details page, sign-in)'],
     ]);
     const offenders: string[] = [];
     const walk = (d: string): void => {

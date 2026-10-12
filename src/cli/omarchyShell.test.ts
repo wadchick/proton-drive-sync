@@ -52,7 +52,7 @@ describe('shell sources', () => {
     const open = /function open\(\) \{[^}]*\}/.exec(panel);
     expect(open?.[0] ?? '').not.toMatch(/signIn|submitSetup/);
     expect(panel).toContain('onClicked: root.service.signIn()');
-    expect(panel).toContain('onClicked: root.service.submitSetup(root.localDraft, root.remoteDraft)');
+    expect(panel).toContain('onClicked: root.service.configureFolders()');
   });
 
   it('offers Open config immediately after Open details', () => {

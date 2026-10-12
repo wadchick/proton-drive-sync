@@ -3,13 +3,19 @@
  * port and a per-run token in the path. Shows transfers, conflicts,
  * quarantine and the held plan with the same actions as the tray, rendered
  * in the default browser (dbusmenu cannot show tables).
+ *
+ * The secret never becomes a process argument: `listen` writes a launcher file
+ * (see `cli/launcher.ts`) and the tray, the bar panel and the CLI hand
+ * `xdg-open` only that path.
  */
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { dirname } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
+import { removeLauncher, writeLauncher } from '../cli/launcher.js';
 import type { ControlTarget } from '../engine/control.js';
 import { packageVersion } from '../version.js';
 import { clientScript } from './detailView.js';
@@ -65,13 +71,29 @@ export class DetailPageServer {
     this.locale = options.locale === undefined ? systemLocale() : options.locale;
   }
 
+  private launcherPath: string | null = null;
+
   get url(): string {
     return `http://127.0.0.1:${String(this.port)}/${this.token}/`;
   }
 
-  async listen(port = 0): Promise<void> {
+  /** `file:` URL of the launcher, the only form of the page's address handed to other programs. */
+  get launcherUrl(): string | null {
+    return this.launcherPath === null ? null : pathToFileURL(this.launcherPath).href;
+  }
+
+  /** Binds the page; with `launcherPath`, also writes the 0600 redirect file to it. */
+  async listen(port = 0, launcherPath?: string): Promise<void> {
     this.server = createServer((req, res) => {
-      void this.handle(req, res);
+      // Nothing a request does may reach the process as an unhandled rejection.
+      this.handle(req, res).catch(() => {
+        try {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        } catch {
+          // socket already gone
+        }
+      });
     });
     await new Promise<void>((resolve, reject) => {
       this.server?.once('error', reject);
@@ -80,9 +102,17 @@ export class DetailPageServer {
       });
     });
     this.port = (this.server.address() as AddressInfo).port;
+    if (launcherPath !== undefined) {
+      writeLauncher(launcherPath, this.url);
+      this.launcherPath = launcherPath;
+    }
   }
 
   async close(): Promise<void> {
+    if (this.launcherPath !== null) {
+      removeLauncher(this.launcherPath);
+      this.launcherPath = null;
+    }
     await new Promise<void>((resolve) => {
       if (this.server === null) {
         resolve();
@@ -96,8 +126,8 @@ export class DetailPageServer {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    const parts = url.pathname.split('/').filter((p) => p !== '');
+    // Node's parser passes absolute targets such as `http://[` that `URL` rejects; unauthenticated, so 404 like any other miss.
+    const parts = requestPath(req.url).split('/').filter((p) => p !== '');
     if (parts[0] !== this.token) {
       res.writeHead(404).end('not found');
       return;
@@ -228,6 +258,15 @@ const SYNC_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" s
   '<path d="M13.5 6.5A5.5 5.5 0 0 0 3.4 4.3"/><path d="M2.5 9.5a5.5 5.5 0 0 0 10.1 2.2"/><path d="M3 1.6v2.9h2.9"/><path d="M13 14.4v-2.9h-2.9"/></svg>';
 
 /** The details page document without the theme or folder icon. A null version omits the version line. */
+/** The request target's path, or '' when it is not a path the URL parser accepts. */
+export function requestPath(target: string | undefined): string {
+  try {
+    return new URL(target ?? '/', 'http://127.0.0.1').pathname;
+  } catch {
+    return '';
+  }
+}
+
 export function detailDocument(): string {
   return renderPage('', '');
 }

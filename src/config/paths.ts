@@ -18,9 +18,12 @@ export interface AppPaths {
   /** $XDG_STATE_HOME/proton-drive-sync (audit and debug logs) */
   stateDir: string;
   auditLogDir: string;
-  /** $XDG_RUNTIME_DIR/proton-drive-sync (control socket) */
+  /** $XDG_RUNTIME_DIR/proton-drive-sync (control socket, details launcher) */
   runtimeDir: string;
   controlSocket: string;
+  /** 0600 files that redirect to the details page and the sign-in URL; openers get these paths, never the secrets. */
+  detailLauncher: string;
+  loginLauncher: string;
 }
 
 export function resolveAppPaths(env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): AppPaths {
@@ -47,5 +50,7 @@ export function resolveAppPaths(env: NodeJS.ProcessEnv = process.env, home: stri
     auditLogDir: path.join(stateDir, 'audit'),
     runtimeDir,
     controlSocket: path.join(runtimeDir, 'control.sock'),
+    detailLauncher: path.join(runtimeDir, 'details.html'),
+    loginLauncher: path.join(runtimeDir, 'login.html'),
   };
 }

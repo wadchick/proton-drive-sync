@@ -2,13 +2,14 @@
  * CLI command implementations, separated from process wiring so they can be
  * exercised in-process against the fake remote.
  */
-import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { history } from '../audit/history.js';
 import { saveConfigFile } from '../config/configFile.js';
 import { adoptedRootIdentity, readRootIdentity } from '../config/localRoot.js';
+import type { AppPaths } from '../config/paths.js';
 import { ConfigError } from '../config/schema.js';
 import { runSetup } from '../config/setup.js';
 import { ControlClient, ControlServer, type ControlTarget } from '../engine/control.js';
@@ -22,6 +23,7 @@ import { RecycleBin } from '../safety/recycle.js';
 import { DetailPageServer } from '../tray/detailPage.js';
 import { packageVersion } from '../version.js';
 import { formatStatus, formatTable } from './output.js';
+import { removeLauncher, writeLauncher, xdgOpen } from './launcher.js';
 import { secretStoreFor, type CliContext } from './runtime.js';
 
 /** The part of the Proton runtime the commands need; the fake provides the same shape in tests. */
@@ -87,7 +89,8 @@ export async function login(deps: CommandDeps, usePassword: boolean, json: boole
           deps.stderr('Sign in in your browser. Keep this terminal open until it completes.');
           deps.stderr(`If the browser did not open, visit:\n  ${url}`);
         }
-        (deps.openBrowser ?? defaultOpenBrowser)(url);
+        // The URL carries the AES key for the key password: it reaches the browser only through the 0600 launcher.
+        (deps.openBrowser ?? ((u) => { xdgOpen(writeLauncher(deps.ctx.paths.loginLauncher, u)); }))(url);
       });
     }
     deps.ctx.audit.append({ kind: 'auth', message: 'login successful', outcome: 'ok' });
@@ -101,6 +104,7 @@ export async function login(deps: CommandDeps, usePassword: boolean, json: boole
     }
     throw error;
   } finally {
+    removeLauncher(deps.ctx.paths.loginLauncher);
     await runtime.dispose();
   }
 }
@@ -158,21 +162,32 @@ export function expandHome(p: string, home: string = os.homedir()): string {
   return p;
 }
 
-export async function setup(deps: CommandDeps, args: string[], json: boolean): Promise<number> {
-  const [localArg, remoteArg] = args;
-  if (localArg === undefined || remoteArg === undefined) throw new CliError('usage: setup <local-dir> <remote-folder>', 2);
-  const localRoot = path.resolve(expandHome(localArg));
+export async function setup(deps: CommandDeps, args: string[], json: boolean, interactive = false): Promise<number> {
+  let [localArg, remoteArg] = args;
+  const usage = 'usage: setup <local-dir> <remote-folder> | setup --interactive';
+  if ((interactive && (args.length !== 0 || json)) || (!interactive && args.length !== 2)) {
+    throw new CliError(usage, 2);
+  }
   const runtime = await deps.createRuntime();
   try {
     if (runtime.session.current !== 'logged_in') throw new CliError('not logged in; run `proton-drive-sync login` first');
-    const result = await runSetup({ localRoot, remoteRoot: remoteArg, configFile: deps.ctx.paths.configFile, remote: runtime.remote });
+    if (interactive) {
+      localArg = await deps.prompt('Local folder to sync: ');
+      remoteArg = await deps.prompt('Proton Drive folder (for example /my-files): ');
+    }
+    if (!localArg?.trim() || !remoteArg?.trim()) {
+      throw new CliError('Both folder paths are required. Run `setup` again and enter both paths.');
+    }
+    const localRoot = path.resolve(expandHome(localArg.trim()));
+    const remoteRoot = remoteArg.trim();
+    const result = await runSetup({ localRoot, remoteRoot, configFile: deps.ctx.paths.configFile, remote: runtime.remote });
     deps.ctx.config = result.config;
     deps.ctx.audit.append({ kind: 'engine', op: 'setup', message: `sync pair configured: ${localRoot} <-> ${remoteArg}`, details: { remoteRootNodeUid: result.config.remoteRootNodeUid, pairChanged: result.pairChanged } });
     out(
       deps,
       json,
       [
-        `Configured ${localRoot} <-> ${remoteArg}`,
+        `Configured ${localRoot} <-> ${remoteRoot}`,
         result.pairChanged ? 'The sync pair changed: the first run starts a fresh baseline (no deletes) and the old state is kept.' : 'Ready. Start with `proton-drive-sync run` (add --dry-run to preview).',
       ],
       { config: result.config, pairChanged: result.pairChanged },
@@ -260,7 +275,7 @@ export async function run(deps: CommandDeps, flags: { dryRun: boolean; paused: b
   throttle = (s) => { engine.onThrottle(s); };
   const page = new DetailPageServer(bundle.controlTarget, { roots: { local: config.localRoot, remote: config.remoteRoot } });
   try {
-    await page.listen();
+    await page.listen(0, ctx.paths.detailLauncher);
   } catch (error) {
     await page.close();
     await bundle.dispose();
@@ -269,7 +284,8 @@ export async function run(deps: CommandDeps, flags: { dryRun: boolean; paused: b
   }
   const controlTarget: ControlTarget = {
     ...bundle.controlTarget,
-    detailUrl: () => page.url,
+    // Only the launcher leaves this process; the token URL stays inside its 0600 file.
+    detailUrl: () => page.launcherUrl,
   };
   const control = new ControlServer(ctx.paths.controlSocket, controlTarget);
   try {
@@ -284,7 +300,7 @@ export async function run(deps: CommandDeps, flags: { dryRun: boolean; paused: b
   let tray: { dispose(): Promise<void> } | null = null;
   if (flags.tray && deps.startTray !== undefined) {
     try {
-      tray = await deps.startTray({ engine: bundle.engine, controlTarget, detailUrl: page.url });
+      tray = await deps.startTray({ engine: bundle.engine, controlTarget, detailUrl: page.launcherUrl ?? '' });
     } catch (error) {
       ctx.audit.append({ kind: 'engine', message: `tray unavailable: ${error instanceof Error ? error.message : String(error)}; continuing headless` });
       if (!json) deps.stderr('Tray unavailable; running headless. Use `proton-drive-sync status`.');
@@ -446,15 +462,9 @@ export function doctorReport(fields: DoctorReport): DoctorReport {
   };
 }
 
-export function loopbackDetailsUrl(url: unknown): string | null {
-  if (typeof url !== 'string' || url.length === 0) return null;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1') return null;
-    return url;
-  } catch {
-    return null;
-  }
+/** The engine's answer when it is this user's launcher file, so a stray socket peer cannot make `xdg-open` fetch an arbitrary URL. */
+export function launcherDetailsUrl(url: unknown, paths: AppPaths): string | null {
+  return url === pathToFileURL(paths.detailLauncher).href ? url : null;
 }
 
 async function sessionIsStored(deps: CommandDeps): Promise<boolean> {
@@ -473,7 +483,7 @@ async function runningDetailUrl(deps: CommandDeps): Promise<string | null> {
   try {
     await client.connect(1000);
     const result = await client.request<{ url?: unknown }>({ cmd: 'details' });
-    return loopbackDetailsUrl(result.url);
+    return launcherDetailsUrl(result.url, deps.ctx.paths);
   } catch {
     return null;
   } finally {
@@ -516,14 +526,14 @@ export function details(deps: CommandDeps, json: boolean): Promise<number> {
     json,
     async (client) => {
       const result = await client.request<{ url?: unknown }>({ cmd: 'details' });
-      const url = loopbackDetailsUrl(result.url);
-      if (url === null) throw new Error('details page URL is not loopback');
+      const url = launcherDetailsUrl(result.url, deps.ctx.paths);
+      if (url === null) throw new Error('details page launcher is not this user\'s');
       return [url];
     },
     async (client) => {
       const result = await client.request<{ url?: unknown }>({ cmd: 'details' });
-      const url = loopbackDetailsUrl(result.url);
-      if (url === null) throw new Error('details page URL is not loopback');
+      const url = launcherDetailsUrl(result.url, deps.ctx.paths);
+      if (url === null) throw new Error('details page launcher is not this user\'s');
       return { url };
     },
   );
@@ -553,27 +563,17 @@ export function recycle(deps: CommandDeps, args: string[], json: boolean): numbe
   return 0;
 }
 
-function defaultOpenBrowser(url: string): void {
-  try {
-    const child = spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
-    child.on('error', () => undefined);
-    child.unref();
-  } catch {
-    // no opener available; the URL was printed
-  }
-}
-
 export const USAGE = `Usage: proton-drive-sync <command> [options]
 
 Commands:
   login [--password]                 Sign in. Opens the browser; --password uses SRP login (TOTP supported).
   logout                             Sign out and forget the stored session.
-  setup <local-dir> <remote-folder>  Configure the sync pair, e.g. setup ~/ProtonDrive /my-files
+  setup <local-dir> <remote-folder> | setup --interactive  Configure the sync pair
   run [--dry-run] [--paused] [--no-tray]
                                      Run the sync engine (foreground). The details page is served either way.
   doctor                             Report install, sign-in, and whether the engine is running.
   status                             Show engine status (works only while \`run\` is active).
-  details                            Print the loopback details page URL of the running engine.
+  details                            Print the file URL that opens the running engine's details page.
   pause | resume | sync-now          Control the running engine.
   conflicts [resolve <id> <choice>]  List conflicts; choice: keep_local | keep_remote | keep_both
   quarantine [release <id>]          List quarantined items or release one.
@@ -591,6 +591,7 @@ export interface ParsedArgs {
   rest: string[];
   json: boolean;
   password: boolean;
+  interactive: boolean;
   dryRun: boolean;
   paused: boolean;
   tray: boolean;
@@ -611,7 +612,7 @@ export async function dispatch(deps: CommandDeps, args: ParsedArgs): Promise<num
     case 'logout':
       return logout(deps, json);
     case 'setup':
-      return setup(deps, rest, json);
+      return setup(deps, rest, json, args.interactive);
     case 'run':
       return run(deps, { dryRun: args.dryRun, paused: args.paused, tray: args.tray }, json);
     case 'doctor':

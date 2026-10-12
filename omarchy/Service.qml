@@ -17,7 +17,6 @@ Item {
   property var status: null
   property var conflicts: []
   property var quarantine: []
-  property string setupError: ""
   property var queue: []
   property string pendingKind: ""
   // Engine actions that answer only once their work is done (a whole sync cycle, a confirmed
@@ -127,9 +126,6 @@ Item {
       root.conflicts = code === 0 && parsed instanceof Array ? parsed : []
     } else if (kind === "quarantine") {
       root.quarantine = code === 0 && parsed instanceof Array ? parsed : []
-    } else if (kind === "setup") {
-      root.setupError = code === 0 ? "" : String(err || "Setup was refused").trim()
-      root.enqueue(["doctor", "--json"], "doctor")
     } else if (code === 0 && parsed && parsed.state) {
       root.status = parsed
       root.enqueue(["doctor", "--json"], "doctor")
@@ -145,9 +141,10 @@ Item {
   function resolveConflict(id, choice) { root.enqueue(["conflicts", "resolve", String(id), String(choice), "--json"], "resolve") }
   function releaseQuarantine(id) { root.enqueue(["quarantine", "release", String(id), "--json"], "release") }
 
-  function submitSetup(localPath, remotePath) {
-    root.setupError = ""
-    root.enqueue(["setup", String(localPath), String(remotePath)], "setup")
+  function configureFolders() {
+    if (setupProc.running) return
+    setupProc.command = ["omarchy-launch-tui", root.launcherPath, "setup", "--interactive"]
+    setupProc.running = true
   }
 
   function signIn() {
@@ -227,6 +224,11 @@ Item {
   }
 
   Process { id: signInProc }
+
+  Process {
+    id: setupProc
+    onExited: root.poll()
+  }
 
   // One-time migration from 0.2.x, which built the engine into ~/.local/share and ran it from
   // a user unit. The script touches only files carrying this plugin's marker and is a no-op

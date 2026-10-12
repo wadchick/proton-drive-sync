@@ -14,11 +14,11 @@ Run the Node sync engine from the committed plugin checkout so that `omarchy plu
 - **THEN** the chip appears, Sign in and Setup work, and once both are done the engine runs, without any further command
 
 ### Requirement: The engine is a committed, reproducible bundle
-The repository SHALL commit the engine as `dist/cli/main.js`, produced by `npm run build` from the lockfile with every dependency bundled and no native addon. The CI gate SHALL rebuild it and fail when the result differs from the committed file.
+The repository SHALL commit the engine entry point as `dist/cli/main.js` and every generated ESM chunk beside it under `dist/cli/`. `npm run build` SHALL produce these files from the lockfile with every required non-Node dependency bundled and no native addon. Every generated JavaScript file SHALL be at most 524288 bytes, and the build SHALL fail if any file exceeds that limit. The CI gate SHALL rebuild the entire output directory and fail when any generated file is missing, changed, or untracked.
 
 #### Scenario: Rebuild matches
 - **WHEN** `scripts/ci.sh` runs on a clean checkout
-- **THEN** the rebuilt `dist/cli/main.js` is byte-identical to the committed one
+- **THEN** the rebuilt files under `dist/cli/` are byte-identical to the committed files
 
 ### Requirement: Node is found at fixed locations, never on PATH
 `bin/proton-drive-sync` SHALL run the bundle with the first Node.js 24 or newer found among `$PROTON_DRIVE_SYNC_NODE`, `/usr/bin/node`, and the newest `~/.local/share/mise/installs/node/*/bin/node`. It SHALL NOT resolve `node` through `PATH`, SHALL drop `NODE_OPTIONS`, `NODE_PATH`, and `NODE_REPL_EXTERNAL_MODULE`, and SHALL NOT use sudo.

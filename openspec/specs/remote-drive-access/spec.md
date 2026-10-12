@@ -7,7 +7,7 @@ Authenticated, verified access to the user's Proton Drive tree: reading node met
 ## Requirements
 
 ### Requirement: Authenticate with Proton account
-The system SHALL authenticate against the user's Proton account using an official login flow: by default the browser session-fork flow (Proton's web login handles password and second factor and hands back a forked session plus an encrypted key password), with the SRP password-proof flow (including TOTP) as a fallback for terminals without a browser. It SHALL persist the resulting session and key password only in the OS secret store. The password SHALL never be written to disk or to any log.
+The system SHALL authenticate against the user's Proton account using an official login flow: by default the browser session-fork flow (Proton's web login handles password and second factor and hands back a forked session plus an encrypted key password), with the SRP password-proof flow (including TOTP) as a fallback for terminals without a browser. It SHALL persist the resulting session and key password only in the OS secret store. The password SHALL never be written to disk or to any log. The sign-in URL carries the AES key that protects the key password, so it SHALL NOT be passed to any program as a process argument: the login command SHALL hand the browser a launcher file under the runtime directory, readable only by the owner, that redirects to that URL, and SHALL remove it when login ends.
 
 #### Scenario: First login
 - **WHEN** the user runs the login command and completes the browser login (or supplies valid credentials and a second factor with `--password`)
