@@ -3,10 +3,10 @@
  * The loopback details page is owned by `run`, including `--no-tray`. When no
  * tray host is available, `startTray` rejects and the engine keeps running.
  */
-import { spawn } from 'node:child_process';
 import path from 'node:path';
 
 import type { AuditLog } from '../audit/logger.js';
+import { xdgOpen } from '../cli/launcher.js';
 import { INTERNAL_DIR_NAME, type AppPaths } from '../config/paths.js';
 import type { SyncConfig } from '../config/schema.js';
 import type { ControlTarget } from '../engine/control.js';
@@ -35,16 +35,6 @@ export interface TrayOptions {
 export interface TrayHandle {
   detailUrl: string;
   dispose(): Promise<void>;
-}
-
-function xdgOpen(target: string): void {
-  try {
-    const child = spawn('xdg-open', [target], { stdio: 'ignore', detached: true });
-    child.on('error', () => undefined);
-    child.unref();
-  } catch {
-    // no opener available
-  }
 }
 
 export async function startTray(options: TrayOptions): Promise<TrayHandle> {

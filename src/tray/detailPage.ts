@@ -4,19 +4,18 @@
  * quarantine and the held plan with the same actions as the tray, rendered
  * in the default browser (dbusmenu cannot show tables).
  *
- * The secret never becomes a process argument: `listen` writes a 0600 launcher
- * file in the user's runtime dir that redirects to the page, and the tray, the
- * bar panel and the CLI hand `xdg-open` only that path (Jupyter opens its token
- * URL the same way). Another local user can read `/proc/<pid>/cmdline` but not
- * that file.
+ * The secret never becomes a process argument: `listen` writes a launcher file
+ * (see `cli/launcher.ts`) and the tray, the bar panel and the CLI hand
+ * `xdg-open` only that path.
  */
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { removeLauncher, writeLauncher } from '../cli/launcher.js';
 import type { ControlTarget } from '../engine/control.js';
 import { packageVersion } from '../version.js';
 import { clientScript } from './detailView.js';
@@ -104,15 +103,14 @@ export class DetailPageServer {
     });
     this.port = (this.server.address() as AddressInfo).port;
     if (launcherPath !== undefined) {
-      mkdirSync(dirname(launcherPath), { recursive: true, mode: 0o700 });
-      writeFileSync(launcherPath, launcherDocument(this.url), { mode: 0o600, flag: 'w' });
+      writeLauncher(launcherPath, this.url);
       this.launcherPath = launcherPath;
     }
   }
 
   async close(): Promise<void> {
     if (this.launcherPath !== null) {
-      rmSync(this.launcherPath, { force: true });
+      removeLauncher(this.launcherPath);
       this.launcherPath = null;
     }
     await new Promise<void>((resolve) => {
@@ -267,12 +265,6 @@ export function requestPath(target: string | undefined): string {
   } catch {
     return '';
   }
-}
-
-/** The launcher: an immediate redirect to `url`, with a link in case the browser does not follow it. */
-export function launcherDocument(url: string): string {
-  const safe = url.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=${safe}"><title>Proton Drive Sync</title></head><body><a href="${safe}">Open Proton Drive Sync details</a></body></html>\n`;
 }
 
 export function detailDocument(): string {

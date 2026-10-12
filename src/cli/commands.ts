@@ -2,7 +2,6 @@
  * CLI command implementations, separated from process wiring so they can be
  * exercised in-process against the fake remote.
  */
-import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -24,6 +23,7 @@ import { RecycleBin } from '../safety/recycle.js';
 import { DetailPageServer } from '../tray/detailPage.js';
 import { packageVersion } from '../version.js';
 import { formatStatus, formatTable } from './output.js';
+import { removeLauncher, writeLauncher, xdgOpen } from './launcher.js';
 import { secretStoreFor, type CliContext } from './runtime.js';
 
 /** The part of the Proton runtime the commands need; the fake provides the same shape in tests. */
@@ -89,7 +89,8 @@ export async function login(deps: CommandDeps, usePassword: boolean, json: boole
           deps.stderr('Sign in in your browser. Keep this terminal open until it completes.');
           deps.stderr(`If the browser did not open, visit:\n  ${url}`);
         }
-        (deps.openBrowser ?? defaultOpenBrowser)(url);
+        // The URL carries the AES key for the key password: it reaches the browser only through the 0600 launcher.
+        (deps.openBrowser ?? ((u) => { xdgOpen(writeLauncher(deps.ctx.paths.loginLauncher, u)); }))(url);
       });
     }
     deps.ctx.audit.append({ kind: 'auth', message: 'login successful', outcome: 'ok' });
@@ -103,6 +104,7 @@ export async function login(deps: CommandDeps, usePassword: boolean, json: boole
     }
     throw error;
   } finally {
+    removeLauncher(deps.ctx.paths.loginLauncher);
     await runtime.dispose();
   }
 }
@@ -559,16 +561,6 @@ export function recycle(deps: CommandDeps, args: string[], json: boolean): numbe
   const items = bin.list().filter((i) => i.kind === 'file');
   out(deps, json, items.length === 0 ? ['Recycle bin is empty.'] : formatTable([['RECYCLED AT', 'PATH'], ...items.map((i) => [new Date(i.bucket).toISOString(), i.relPath])]), items);
   return 0;
-}
-
-function defaultOpenBrowser(url: string): void {
-  try {
-    const child = spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
-    child.on('error', () => undefined);
-    child.unref();
-  } catch {
-    // no opener available; the URL was printed
-  }
 }
 
 export const USAGE = `Usage: proton-drive-sync <command> [options]
