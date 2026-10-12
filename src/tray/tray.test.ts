@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { initialStatus, type EngineStatus } from '../engine/status.js';
 import type { ConflictEntry, QuarantineEntry } from '../state/misc.ts';
 import { EngineHarness } from '../testing/engineHarness.js';
-import { DetailPageServer, detailDocument } from './detailPage.js';
+import type { ControlTarget } from '../engine/control.js';
+import { DetailPageServer, detailDocument, requestPath } from './detailPage.js';
 
 const pkgVersion = (JSON.parse(readFileSync(path.resolve(import.meta.dirname, '../../package.json'), 'utf8')) as { version: string }).version;
 import { buildTrayModel, indexMenu, type MenuItem } from './menuModel.js';
@@ -19,6 +21,32 @@ function status(over: Partial<EngineStatus>): EngineStatus {
 }
 
 const labels = (items: MenuItem[]): string[] => items.filter((i) => i.separator !== true).map((i) => i.label);
+
+describe('detail page request parsing', () => {
+  it('answers a request target the URL parser rejects with 404 and keeps serving', async () => {
+    expect(requestPath('http://[')).toBe('');
+    const target = { getStatus: () => status({ state: 'idle' }), listConflicts: () => [], listQuarantine: () => [], listRecycle: () => [] } as unknown as ControlTarget;
+    const page = new DetailPageServer(target);
+    await page.listen();
+    try {
+      const port = Number(new URL(page.url).port);
+      const raw = await new Promise<string>((resolve, reject) => {
+        let data = '';
+        const socket = createConnection(port, '127.0.0.1', () => {
+          socket.write('GET http://[ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+        });
+        socket.setEncoding('utf8');
+        socket.on('data', (chunk: string) => { data += chunk; });
+        socket.on('end', () => { resolve(data); });
+        socket.on('error', reject);
+      });
+      expect(raw).toMatch(/^HTTP\/1\.1 404/);
+      expect((await fetch(page.url)).status).toBe(200);
+    } finally {
+      await page.close();
+    }
+  });
+});
 
 describe('detail page version', () => {
   it('leaves the version out of the served document: the live snapshot carries it', () => {
