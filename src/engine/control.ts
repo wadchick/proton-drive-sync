@@ -32,6 +32,14 @@ export type ControlCommand =
   | { cmd: 'reload_session' }
   | { cmd: 'quit' };
 
+/**
+ * Longest list a socket reply carries. The bar panel parses every reply inside
+ * the shared shell process, so the engine never hands it an unbounded array;
+ * the totals travel in `status.attention`, and the full lists live on the
+ * details page, which reads the target directly.
+ */
+export const SHELL_LIST_LIMIT = 50;
+
 export interface ControlTarget {
   getStatus(): EngineStatus;
   pause(): void;
@@ -168,18 +176,18 @@ export class ControlServer {
       case 'reject':
         return this.target.rejectHeldPlan(str('id'));
       case 'conflicts':
-        return this.target.listConflicts();
+        return this.target.listConflicts().slice(0, SHELL_LIST_LIMIT);
       case 'resolve': {
         const choice = str('choice');
         if (choice !== 'keep_local' && choice !== 'keep_remote' && choice !== 'keep_both') throw new Error('choice must be keep_local, keep_remote or keep_both');
         await this.target.resolveConflict(num('id'), choice);
-        return this.target.listConflicts();
+        return this.target.listConflicts().slice(0, SHELL_LIST_LIMIT);
       }
       case 'quarantine':
-        return this.target.listQuarantine();
+        return this.target.listQuarantine().slice(0, SHELL_LIST_LIMIT);
       case 'release':
         this.target.releaseQuarantine(num('id'));
-        return this.target.listQuarantine();
+        return this.target.listQuarantine().slice(0, SHELL_LIST_LIMIT);
       case 'recycle':
         return this.target.listRecycle();
       case 'details':

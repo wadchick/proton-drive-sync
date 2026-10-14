@@ -3,8 +3,9 @@ import { createConnection } from 'node:net';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { ControlClient, ControlServer } from './control.js';
+import { ControlClient, ControlServer, SHELL_LIST_LIMIT } from './control.js';
 import type { EngineStatus } from './status.js';
+import { QuarantineRepo } from '../state/misc.ts';
 import { EngineHarness } from '../testing/engineHarness.js';
 
 /**
@@ -94,6 +95,32 @@ describe('malformed control requests', () => {
       for (const r of replies.slice(0, -1)) expect(r.error).toMatch(/invalid request/);
     } finally {
       socket.destroy();
+      await server.close();
+    }
+  });
+});
+
+describe('list replies are bounded', () => {
+  it('quarantine over the socket never exceeds SHELL_LIST_LIMIT while status still carries the total', async () => {
+    const sockPath = path.join(h.base, 'bounded.sock');
+    const server = new ControlServer(sockPath, h.live.controlTarget);
+    await server.listen();
+    try {
+      const total = SHELL_LIST_LIMIT + 25;
+      const repo = new QuarantineRepo(h.live.store);
+      for (let i = 0; i < total; i++) repo.add({ relPath: `churn-${String(i)}.bin`, nodeUid: `uid-${String(i)}`, reason: 'digest_mismatch', details: null });
+      const client = new ControlClient(sockPath);
+      await client.connect(2000);
+      try {
+        const list = await client.request<unknown[]>({ cmd: 'quarantine' });
+        expect(list).toHaveLength(SHELL_LIST_LIMIT);
+        const status = await client.request<EngineStatus>({ cmd: 'status' });
+        expect(status.attention.quarantined).toBe(total);
+        expect(h.live.controlTarget.listQuarantine()).toHaveLength(total);
+      } finally {
+        client.close();
+      }
+    } finally {
       await server.close();
     }
   });

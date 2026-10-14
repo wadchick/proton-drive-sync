@@ -65,10 +65,18 @@ describe('shell sources', () => {
 
   it('shows at most five conflicts and opens the details page for the rest', () => {
     expect(panel).toContain('readonly property int conflictLimit: 5');
-    expect(panel).toContain('Math.min(root.conflictCount, root.conflictLimit)');
+    expect(panel).toContain('Math.min(service.conflicts.length, conflictLimit)');
     expect(panel).toContain('function offerDetailsForOverflow()');
     expect(panel).toContain('more on the details page');
     expect(panel).not.toContain('root.service.conflicts.length');
+  });
+
+  it('instantiates at most five quarantine delegates and counts the rest from status', () => {
+    expect(panel).toContain('readonly property int quarantineLimit: 5');
+    expect(panel).toContain('Math.min(service.quarantine.length, quarantineLimit)');
+    expect(panel).toContain('service.status.attention.quarantined');
+    expect(panel).toContain('model: root.quarantineCount');
+    expect(panel).not.toContain('root.service.quarantine.length');
   });
 
   it('shows the full text in a tooltip when a line is cut off', () => {

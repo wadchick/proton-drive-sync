@@ -45,13 +45,19 @@ Panel {
     if (status.state === "paused") return "Paused (" + done + "/" + total + ")"
     return ""
   }
-  // A few hundred conflict rows, each with three buttons, is enough to stall the shell.
+  // A few hundred rows, each with buttons, is enough to stall the shell. The engine
+  // already caps every list it sends; the panel instantiates at most `*Limit` delegates
+  // and reads the true totals from status.attention for the overflow button.
   readonly property int conflictLimit: 5
-  readonly property int conflictCount: service && service.conflicts ? service.conflicts.length : 0
+  readonly property int conflictCount: service && service.conflicts ? Math.min(service.conflicts.length, conflictLimit) : 0
+  readonly property int conflictTotal: service && service.status && service.status.attention ? service.status.attention.conflicts : conflictCount
+  readonly property int quarantineLimit: 5
+  readonly property int quarantineCount: service && service.quarantine ? Math.min(service.quarantine.length, quarantineLimit) : 0
+  readonly property int quarantineTotal: service && service.status && service.status.attention ? service.status.attention.quarantined : quarantineCount
   property bool detailsOpenedForOverflow: false
 
   function offerDetailsForOverflow() {
-    if (root.conflictCount <= root.conflictLimit) {
+    if (root.conflictTotal <= root.conflictLimit) {
       root.detailsOpenedForOverflow = false
       return
     }
@@ -292,7 +298,7 @@ Panel {
             visible: root.conflictCount > 0
             title: "CONFLICTS"
             Repeater {
-              model: Math.min(root.conflictCount, root.conflictLimit)
+              model: root.conflictCount
               delegate: Column {
                 required property int index
                 width: content.width
@@ -333,18 +339,18 @@ Panel {
               }
             }
             ActionButton {
-              visible: root.conflictCount > root.conflictLimit && root.service && root.service.doctor && root.service.doctor.detailUrl
-              text: (root.conflictCount - root.conflictLimit) + " more on the details page"
+              visible: root.conflictTotal > root.conflictLimit && root.service && root.service.doctor && root.service.doctor.detailUrl
+              text: (root.conflictTotal - root.conflictLimit) + " more on the details page"
               onClicked: root.service.openExternal(root.service.doctor.detailUrl)
             }
           }
 
           // --------------------------------------------------------- quarantine
           Section {
-            visible: root.service && root.service.quarantine && root.service.quarantine.length > 0
+            visible: root.quarantineCount > 0
             title: "QUARANTINE"
             Repeater {
-              model: root.service && root.service.quarantine ? root.service.quarantine.length : 0
+              model: root.quarantineCount
               delegate: Item {
                 required property int index
                 width: content.width
@@ -370,6 +376,11 @@ Panel {
                   onClicked: root.service.releaseQuarantine(row.id)
                 }
               }
+            }
+            ActionButton {
+              visible: root.quarantineTotal > root.quarantineLimit && root.service && root.service.doctor && root.service.doctor.detailUrl
+              text: (root.quarantineTotal - root.quarantineLimit) + " more on the details page"
+              onClicked: root.service.openExternal(root.service.doctor.detailUrl)
             }
           }
 

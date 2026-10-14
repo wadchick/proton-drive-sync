@@ -16,7 +16,7 @@ import { FakeRemote } from '../testing/fakeRemote.js';
 import { World } from '../testing/world.js';
 import { evaluateBrake, heldAffected, PlanGate } from './brake.js';
 import { runPreflight } from './preflight.js';
-import { QuarantineService } from './quarantine.js';
+import { MAX_OPEN_QUARANTINE, MAX_RELEASED_QUARANTINE, QuarantineService } from './quarantine.js';
 import { RecycleBin } from './recycle.js';
 
 let dir: string;
@@ -312,6 +312,26 @@ describe('quarantine', () => {
       expect(after.operations.map((o) => o.kind).sort()).toEqual(['recycle_local', 'recycle_local']);
       const ops = audit.readAll().entries.map((e) => e.op);
       expect(ops).toEqual(['quarantine', 'release_quarantine']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('retention is bounded: the oldest open entry is released past the cap and released history is pruned', () => {
+    const store = StateStore.open(path.join(dir, 'state.db'));
+    try {
+      const q = new QuarantineService(new QuarantineRepo(store), audit);
+      const total = MAX_OPEN_QUARANTINE + MAX_RELEASED_QUARANTINE + 7;
+      for (let i = 0; i < total; i++) q.quarantine({ relPath: `churn-${String(i)}.bin`, nodeUid: `uid-${String(i)}`, reason: 'digest_mismatch' });
+      const open = q.open();
+      expect(open).toHaveLength(MAX_OPEN_QUARANTINE);
+      // Newest survive, oldest were released first.
+      expect(open[0]?.relPath).toBe(`churn-${String(total - MAX_OPEN_QUARANTINE)}.bin`);
+      expect(open.at(-1)?.relPath).toBe(`churn-${String(total - 1)}.bin`);
+      const rows = store.db.prepare('SELECT COUNT(*) AS n FROM quarantine').get() as { n: number };
+      expect(rows.n).toBe(MAX_OPEN_QUARANTINE + MAX_RELEASED_QUARANTINE);
+      const evictions = audit.readAll().entries.filter((e) => e.op === 'evict_quarantine');
+      expect(evictions).toHaveLength(total - MAX_OPEN_QUARANTINE);
     } finally {
       store.close();
     }

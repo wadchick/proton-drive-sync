@@ -89,6 +89,20 @@ export class QuarantineRepo {
     this.store.db.prepare('UPDATE quarantine SET released_at = ? WHERE id = ? AND released_at IS NULL').run(this.store.now(), id);
     return this.get(id);
   }
+  /**
+   * Bound retention: release the oldest open entries beyond `maxOpen` and drop
+   * released rows beyond the newest `maxReleased`. Returns what was released.
+   */
+  trim(maxOpen: number, maxReleased: number): QuarantineEntry[] {
+    const evicted = (this.store.db.prepare('SELECT * FROM quarantine WHERE released_at IS NULL ORDER BY id DESC LIMIT -1 OFFSET ?').all(maxOpen) as unknown as QuarantineRow[]).map(toQuarantine);
+    const now = this.store.now();
+    const release = this.store.db.prepare('UPDATE quarantine SET released_at = ? WHERE id = ?');
+    for (const e of evicted) release.run(now, e.id);
+    this.store.db
+      .prepare('DELETE FROM quarantine WHERE released_at IS NOT NULL AND id NOT IN (SELECT id FROM quarantine WHERE released_at IS NOT NULL ORDER BY released_at DESC, id DESC LIMIT ?)')
+      .run(maxReleased);
+    return evicted;
+  }
 }
 
 function toQuarantine(r: QuarantineRow): QuarantineEntry {
