@@ -9,6 +9,7 @@ import { SecretRegistry } from '../audit/redact.js';
 import { loadConfigFile } from '../config/configFile.js';
 import { resolveAppPaths } from '../config/paths.js';
 import { ControlServer, type ControlTarget } from '../engine/control.js';
+import { initialStatus } from '../engine/status.js';
 import { LoginError } from '../remote/proton/auth.js';
 import { FakeRemote } from '../testing/fakeRemote.js';
 import { CliError, dispatch, doctorReport, expandHome, type CommandDeps, type CommandRuntime } from './commands.js';
@@ -150,7 +151,7 @@ describe('CLI', () => {
     deps = makeDeps();
     let reloads = 0;
     const server = new ControlServer(deps.ctx.paths.controlSocket, {
-      getStatus: () => ({ state: 'idle' }),
+      getStatus: () => ({ ...initialStatus(false, 0), state: 'idle' }),
       onStatus: () => () => undefined,
       reloadSession: () => {
         reloads++;
@@ -173,7 +174,7 @@ describe('CLI', () => {
   it('login does not hang on an engine that accepts the connection but never answers', async () => {
     deps = makeDeps();
     const server = new ControlServer(deps.ctx.paths.controlSocket, {
-      getStatus: () => ({ state: 'idle' }),
+      getStatus: () => ({ ...initialStatus(false, 0), state: 'idle' }),
       onStatus: () => () => undefined,
       reloadSession: () => new Promise<void>(() => undefined),
     } as unknown as ControlTarget);

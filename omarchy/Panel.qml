@@ -52,6 +52,9 @@ Panel {
   readonly property int conflictCount: service && service.conflicts ? Math.min(service.conflicts.length, conflictLimit) : 0
   readonly property int conflictTotal: service && service.status && service.status.attention ? service.status.attention.conflicts : conflictCount
   readonly property int quarantineLimit: 5
+  readonly property int heldLimit: 5
+  readonly property int heldCount: root.held && root.held.affected ? Math.min(root.held.affected.length, heldLimit) : 0
+  readonly property int heldTotal: root.held ? Number(root.held.affectedTotal || (root.held.affected ? root.held.affected.length : 0)) : 0
   readonly property int quarantineCount: service && service.quarantine ? Math.min(service.quarantine.length, quarantineLimit) : 0
   readonly property int quarantineTotal: service && service.status && service.status.attention ? service.status.attention.quarantined : quarantineCount
   property bool detailsOpenedForOverflow: false
@@ -267,14 +270,19 @@ Panel {
               font.pixelSize: Style.font.body
             }
             Repeater {
-              model: root.held && root.held.affected ? root.held.affected.length : 0
+              model: root.heldCount
               delegate: ElidedText {
                 required property int index
                 width: content.width
-                text: root.held ? String(root.held.affected[index]) : ""
+                text: root.held && root.held.affected ? String(root.held.affected[index]) : ""
                 color: root.dim
                 fontSize: Style.font.bodySmall
               }
+            }
+            ActionButton {
+              visible: root.heldTotal > root.heldLimit && root.service && root.service.doctor && root.service.doctor.detailUrl
+              text: (root.heldTotal - root.heldLimit) + " more on the details page"
+              onClicked: root.service.openExternal(root.service.doctor.detailUrl)
             }
             Row {
               width: content.width

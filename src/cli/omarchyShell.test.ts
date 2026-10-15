@@ -79,6 +79,14 @@ describe('shell sources', () => {
     expect(panel).not.toContain('root.service.quarantine.length');
   });
 
+  it('instantiates at most five held-plan delegates and counts the rest from status', () => {
+    expect(panel).toContain('readonly property int heldLimit: 5');
+    expect(panel).toContain('Math.min(root.held.affected.length, heldLimit)');
+    expect(panel).toContain('root.held.affectedTotal');
+    expect(panel).toContain('model: root.heldCount');
+    expect(panel).not.toContain('model: root.held && root.held.affected ? root.held.affected.length');
+  });
+
   it('shows the full text in a tooltip when a line is cut off', () => {
     expect(panel).toContain('component ElidedText');
     expect(panel).toContain('visible: lineHover.hovered && line.truncated');

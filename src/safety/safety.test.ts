@@ -250,6 +250,18 @@ describe('mass-change brake', () => {
     expect(ops).toContain('reject_plan');
   });
 
+  it('re-planning the same held work every cycle adds no audit entry; a changed plan adds one', () => {
+    const gate = new PlanGate({ ...DEFAULTS.safety, brakeMaxChanges: 3 }, audit, () => 42);
+    const before = audit.readAll().entries.filter((e) => e.op === 'brake').length;
+    const w = bigWorld(20);
+    for (let i = 0; i < 5; i++) w.remoteTrash(`f${String(i)}.txt`);
+    for (let cycle = 0; cycle < 50; cycle++) expect(gate.evaluate(reconcile(w.input()), 20).status).toBe('held');
+    expect(audit.readAll().entries.filter((e) => e.op === 'brake')).toHaveLength(before + 1);
+    w.remoteTrash('f5.txt');
+    expect(gate.evaluate(reconcile(w.input()), 20).status).toBe('held');
+    expect(audit.readAll().entries.filter((e) => e.op === 'brake')).toHaveLength(before + 2);
+  });
+
   it('unaffected items keep syncing while a plan is held (the plan simply excludes them from held operations)', () => {
     const w = bigWorld(20);
     for (let i = 0; i < 5; i++) w.remoteTrash(`f${String(i)}.txt`);

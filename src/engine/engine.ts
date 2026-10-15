@@ -67,6 +67,8 @@ export interface CycleResult {
   skipped: string | null;
 }
 
+const MAX_REASON_LENGTH = 512;
+
 export class SyncEngine extends EventEmitter {
   private status: EngineStatus;
   private readonly now: () => number;
@@ -214,8 +216,10 @@ export class SyncEngine extends EventEmitter {
     return this.libraryCache?.counts ?? this.status.counts;
   }
 
-  private setState(state: EngineState, reason: string | null = null): void {
+  private setState(state: EngineState, fullReason: string | null = null): void {
     if (!canTransition(this.status.state, state)) throw new IllegalStateTransitionError(this.status.state, state);
+    // A reason can quote a failure from outside this process; it stays one short line everywhere.
+    const reason = fullReason === null ? null : fullReason.slice(0, MAX_REASON_LENGTH);
     if (this.status.state !== state || this.status.reason !== reason) {
       this.deps.audit.append({ kind: 'engine', op: 'state', message: `${this.status.state} -> ${state}${reason !== null ? ` (${reason})` : ''}` });
     }

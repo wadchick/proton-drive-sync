@@ -418,7 +418,7 @@ export function held(deps: CommandDeps, args: string[], json: boolean): Promise<
     return viaSocket(
       deps,
       json,
-      async (c) => (action === 'confirm' ? formatStatus(await c.request<EngineStatus>({ cmd: 'confirm', args: { id } })) : [`Rejected. ${String((await c.request<unknown[]>({ cmd: 'reject', args: { id } })).length)} operation(s) discarded.`]),
+      async (c) => (action === 'confirm' ? formatStatus(await c.request<EngineStatus>({ cmd: 'confirm', args: { id } })) : [`Rejected. ${String((await c.request<{ discarded: number }>({ cmd: 'reject', args: { id } })).discarded)} operation(s) discarded.`]),
       (c) => c.request(action === 'confirm' ? { cmd: 'confirm', args: { id } } : { cmd: 'reject', args: { id } }),
     );
   }
@@ -429,7 +429,8 @@ export function held(deps: CommandDeps, args: string[], json: boolean): Promise<
       const s = await c.request<EngineStatus>({ cmd: 'status' });
       const h = s.attention.heldPlan;
       if (h === null) return ['No held plan.'];
-      return [`Held plan ${h.id}: ${h.reason}`, ...h.affected.map((a) => `  ${a}`), '', `Decide with: proton-drive-sync held confirm ${h.id}   or   held reject ${h.id}`];
+      const more = (h.affectedTotal ?? h.affected.length) - h.affected.length;
+      return [`Held plan ${h.id}: ${h.reason}`, ...h.affected.map((a) => `  ${a}`), ...(more > 0 ? [`  … and ${String(more)} more (see the details page)`] : []), '', `Decide with: proton-drive-sync held confirm ${h.id}   or   held reject ${h.id}`];
     },
     async (c) => (await c.request<EngineStatus>({ cmd: 'status' })).attention.heldPlan,
   );

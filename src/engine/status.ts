@@ -31,7 +31,8 @@ export interface TransferStatus {
 export interface AttentionSummary {
   conflicts: number;
   quarantined: number;
-  heldPlan: { id: string; reason: string; affected: string[] } | null;
+  /** `affectedTotal` is set where `affected` was cut to a shell-safe length. */
+  heldPlan: { id: string; reason: string; affected: string[]; affectedTotal?: number } | null;
 }
 
 /** Files finished and files to transfer in the current run. Null when no file run is active. */
