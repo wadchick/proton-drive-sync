@@ -304,7 +304,9 @@ export class SyncEngine extends EventEmitter {
       config: { concurrency: this.deps.config.transfers.concurrency, maxRetries: this.deps.config.transfers.maxRetries, dryRun: this.deps.config.dryRun },
       onEvent: (e) => { this.onExecutorEvent(e); },
       // Our own changes on Proton reach the remote view at once, not when their events arrive.
-      onRemoteChange: (change) => { this.deps.mirror.applyOwnChange(change); },
+      onRemoteChange: (change, stamp) => { this.deps.mirror.applyOwnChange(change, stamp); },
+      beginRemoteObservation: () => this.deps.mirror.beginRead(),
+      endRemoteObservation: (stamp) => { this.deps.mirror.endRead(stamp); },
     };
   }
 

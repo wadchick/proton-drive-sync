@@ -68,7 +68,10 @@ export interface ExecutorContext {
   config: ExecutorConfig;
   onEvent?: (event: ExecutorEvent) => void;
   /** Our own completed remote mutations, so the caller's remote view never lags behind our work. */
-  onRemoteChange?: (change: RemoteChange) => void;
+  onRemoteChange?: (change: RemoteChange, stamp?: number) => void;
+  /** Keep an own verification read ordered against listings and events through commit. */
+  beginRemoteObservation?: () => number;
+  endRemoteObservation?: (stamp: number) => void;
   hooks?: ExecutorHooks;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   now?: () => number;

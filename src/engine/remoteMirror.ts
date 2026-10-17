@@ -6,20 +6,28 @@ import type { RemoteChange } from '../execute/types.js';
 import type { NodeRemoteEvent } from '../remote/events.js';
 import type { RemoteDrive, RemoteNode } from '../remote/interface.js';
 import type { RemoteView } from '../reconcile/types.js';
-import { listRemoteTree, remoteViewFromNodes } from './views.js';
+import { remoteViewFromNodes } from './views.js';
+
+interface StampedNode { node: RemoteNode; stamp: number }
 
 export class RemoteMirror {
   private nodes = new Map<string, RemoteNode>();
+  private readonly nodeStamps = new Map<string, number>();
+  private readonly tombstones = new Map<string, number>();
+  private readonly readsInFlight = new Set<number>();
+  private nextObservation = 0;
   private complete = false;
   private available = true;
   lastFullListingAt: number | null = null;
   /** The mirror reflects the server at least as of this time (start of the last listing or completed poll). */
   private asOf: number | undefined;
-  /** The engine's own changes made while each full listing in progress was under way. */
-  private readonly ownChangesDuringListings = new Set<RemoteChange[]>();
-  /** Counts the engine's own changes; per node, the count when it was last changed so. */
-  private ownChanges = 0;
-  private readonly ownChangedAt = new Map<string, number>();
+  private activeRefresh: Promise<void> | null = null;
+  private queuedRefresh: {
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+    signal: AbortSignal | undefined;
+  } | null = null;
 
   constructor(
     private readonly remote: RemoteDrive,
@@ -35,43 +43,113 @@ export class RemoteMirror {
     return this.nodes.size;
   }
 
-  /** Replace the mirror with a complete listing. Throws (and marks unavailable) on failure. */
-  async fullRefresh(signal?: AbortSignal): Promise<void> {
+  /** A read stays registered until its result has been published or discarded. */
+  beginRead(): number {
+    const stamp = ++this.nextObservation;
+    this.readsInFlight.add(stamp);
+    return stamp;
+  }
+
+  endRead(stamp: number): void {
+    this.readsInFlight.delete(stamp);
+    this.pruneTombstones();
+  }
+
+  private stamp(): number {
+    return ++this.nextObservation;
+  }
+
+  private pruneTombstones(): void {
+    let oldest = Infinity;
+    for (const stamp of this.readsInFlight) oldest = Math.min(oldest, stamp);
+    for (const [uid, stamp] of this.tombstones) {
+      if (stamp <= oldest) this.tombstones.delete(uid);
+    }
+  }
+
+  get tombstoneCount(): number {
+    return this.tombstones.size;
+  }
+
+  /** Concurrent requests queue one follow-up, so no two listings overlap. */
+  fullRefresh(signal?: AbortSignal): Promise<void> {
+    if (this.activeRefresh !== null) {
+      if (this.queuedRefresh === null) {
+        let resolve!: () => void;
+        let reject!: (error: unknown) => void;
+        const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+        this.queuedRefresh = { promise, resolve, reject, signal };
+      }
+      return this.queuedRefresh.promise;
+    }
+    return this.startRefresh(signal);
+  }
+
+  private startRefresh(signal?: AbortSignal): Promise<void> {
+    const refresh = this.performRefresh(signal);
+    this.activeRefresh = refresh;
+    void refresh.then(() => { this.afterRefresh(refresh); }, () => { this.afterRefresh(refresh); });
+    return refresh;
+  }
+
+  private afterRefresh(refresh: Promise<void>): void {
+    if (this.activeRefresh !== refresh) return;
+    this.activeRefresh = null;
+    const queued = this.queuedRefresh;
+    if (queued === null) return;
+    this.queuedRefresh = null;
+    void this.startRefresh(queued.signal).then(queued.resolve, queued.reject);
+  }
+
+  private async performRefresh(signal?: AbortSignal): Promise<void> {
     const startedAt = this.now();
-    const ownChanges: RemoteChange[] = [];
-    this.ownChangesDuringListings.add(ownChanges);
+    const startStamp = this.beginRead();
     try {
-      const nodes = await listRemoteTree(this.remote, this.rootUid, signal);
-      this.nodes = new Map(nodes.map((n) => [n.uid, n]));
-      // The listing may have read a node before the engine changed it: keep the change.
-      for (const change of ownChanges) this.applyChange(change);
+      const root = await this.remote.getNode(this.rootUid);
+      if (root === null) throw new Error(`remote root ${this.rootUid} not found`);
+      const observed: StampedNode[] = [{ node: root, stamp: startStamp }];
+      const queue: RemoteNode[] = [root];
+      while (queue.length > 0) {
+        const dir = queue.shift();
+        if (dir === undefined) break;
+        const folderStamp = this.stamp();
+        for (const child of await this.remote.listChildren(dir.uid, signal)) {
+          observed.push({ node: child, stamp: folderStamp });
+          if (child.type === 'folder' && !child.isTrashed && child.nameStatus === 'ok') queue.push(child);
+        }
+      }
+      const seen = new Set(observed.map(({ node }) => node.uid));
+      for (const { node, stamp } of observed) this.applyNode(node, stamp);
+      for (const [uid, stamp] of [...this.nodeStamps]) {
+        if (!seen.has(uid) && stamp < startStamp) this.applyRemoval(uid, startStamp);
+      }
       this.complete = true;
       this.available = true;
       this.lastFullListingAt = this.now();
-      this.asOf = startedAt;
+      this.markPolled(startedAt);
     } catch (error) {
       this.complete = false;
       this.available = false;
       throw error;
     } finally {
-      this.ownChangesDuringListings.delete(ownChanges);
+      this.endRead(startStamp);
     }
   }
 
   /** Apply one node event by re-reading the node (events carry no metadata). */
   async applyEvent(event: NodeRemoteEvent): Promise<void> {
-    if (event.type === 'node_deleted') {
-      this.nodes.delete(event.nodeUid);
-      return;
+    const stamp = this.beginRead();
+    try {
+      if (event.type === 'node_deleted') this.applyRemoval(event.nodeUid, stamp);
+      else {
+        const node = await this.remote.getNode(event.nodeUid);
+        if (node === null) this.applyRemoval(event.nodeUid, stamp);
+        else this.applyNode(node, stamp);
+        this.available = true;
+      }
+    } finally {
+      this.endRead(stamp);
     }
-    const readFrom = this.ownChanges;
-    const node = await this.remote.getNode(event.nodeUid);
-    // The engine changed this node itself while the read was under way: the read may predate that
-    // change, and the change's own event will come and read the node again.
-    if ((this.ownChangedAt.get(event.nodeUid) ?? 0) > readFrom) return;
-    if (node === null) this.nodes.delete(event.nodeUid);
-    else this.nodes.set(node.uid, node);
-    this.available = true;
   }
 
   /**
@@ -80,23 +158,30 @@ export class RemoteMirror {
    * has planned, and a plan from the older tree undoes the change or records a conflict with it.
    * The event, when it comes, re-reads the node and agrees.
    */
-  applyOwnChange(change: RemoteChange): void {
-    // Every node the change touches (a removal takes the descendants too) is marked as changed by
-    // the engine, so an event read of any of them that was under way is not stored over it.
-    const changedAt = ++this.ownChanges;
-    for (const uid of this.applyChange(change)) this.ownChangedAt.set(uid, changedAt);
-    for (const during of this.ownChangesDuringListings) during.push(change);
+  applyOwnChange(change: RemoteChange, stamp = this.stamp()): void {
+    if (change.type === 'remove') this.applyRemoval(change.uid, stamp);
+    else this.applyNode(change.node, stamp);
   }
 
-  upsert(node: RemoteNode): void {
+  private applyNode(node: RemoteNode, stamp: number): void {
+    const parentRemoval = node.parentUid === undefined ? undefined : this.tombstones.get(node.parentUid);
+    if (parentRemoval !== undefined && stamp <= parentRemoval) {
+      // A complete listing may contain a child that was not previously known when its parent
+      // was removed. Carry the parent's tombstone through that child as well.
+      this.tombstones.set(node.uid, Math.max(this.tombstones.get(node.uid) ?? 0, parentRemoval));
+      return;
+    }
+    if (stamp < (this.nodeStamps.get(node.uid) ?? 0) || stamp <= (this.tombstones.get(node.uid) ?? 0)) return;
     this.nodes.set(node.uid, node);
+    this.nodeStamps.set(node.uid, stamp);
+    this.tombstones.delete(node.uid);
   }
 
   /**
    * Forget a node and everything under it (a trashed folder stays as an upsert, marked trashed).
-   * Returns the uids forgotten.
    */
-  remove(uid: string): string[] {
+  private applyRemoval(uid: string, stamp: number): void {
+    if (stamp < (this.nodeStamps.get(uid) ?? 0) || stamp < (this.tombstones.get(uid) ?? 0)) return;
     const gone = new Set([uid]);
     let grew = true;
     while (grew) {
@@ -108,15 +193,13 @@ export class RemoteMirror {
         }
       }
     }
-    for (const g of gone) this.nodes.delete(g);
-    return [...gone];
-  }
-
-  /** Apply a change; returns the uids it touched. */
-  private applyChange(change: RemoteChange): string[] {
-    if (change.type === 'remove') return this.remove(change.uid);
-    this.upsert(change.node);
-    return [change.node.uid];
+    for (const g of gone) {
+      if (stamp < (this.nodeStamps.get(g) ?? 0) || stamp < (this.tombstones.get(g) ?? 0)) continue;
+      this.nodes.delete(g);
+      this.nodeStamps.delete(g);
+      this.tombstones.set(g, stamp);
+    }
+    this.pruneTombstones();
   }
 
   /**
