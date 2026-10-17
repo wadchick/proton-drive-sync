@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import fc from 'fast-check';
 
 import { FakeRemote } from '../testing/fakeRemote.js';
 import { RemoteMirror } from './remoteMirror.js';
@@ -118,6 +119,224 @@ describe('RemoteMirror and changes the engine made itself', () => {
     await refreshing;
     // The listing's older result does not undo the rename the engine made meanwhile.
     expect(mirror.view().items.get(a.uid)?.name).toBe('renamed.txt');
+  });
+});
+
+describe('RemoteMirror observation ordering', () => {
+  it('keeps an event newer than an in-flight listing, even after an own rename', async () => {
+    const { fake, root } = seedTree();
+    const mirror = new RemoteMirror(fake, root);
+    await mirror.fullRefresh();
+    const uid = [...mirror.view().items.values()].find((item) => item.name === 'a.txt')?.uid;
+    if (uid === undefined) throw new Error('missing a.txt');
+    const list = fake.listChildren.bind(fake);
+    let listed!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { listed = resolve; });
+    const release = new Promise<void>((resolve) => { resume = resolve; });
+    fake.listChildren = async (parentUid: string) => {
+      const children = await list(parentUid);
+      if (parentUid === root) { listed(); await release; }
+      return children;
+    };
+    const refreshing = mirror.fullRefresh();
+    await paused;
+    mirror.applyOwnChange({ type: 'upsert', node: await fake.rename(uid, 'b.txt') });
+    await fake.rename(uid, 'c.txt');
+    await mirror.applyEvent({ type: 'node_updated', nodeUid: uid, parentUid: root, isTrashed: false, eventId: '10', scopeId: 'scope-1' });
+    resume();
+    await refreshing;
+    expect(mirror.view().items.get(uid)?.name).toBe('c.txt');
+  });
+
+  it('rejects an event read and a verified own read older than a completed listing or event', async () => {
+    const { fake, root } = seedTree();
+    const mirror = new RemoteMirror(fake, root);
+    await mirror.fullRefresh();
+    const uid = [...mirror.view().items.values()].find((item) => item.name === 'a.txt')?.uid;
+    if (uid === undefined) throw new Error('missing a.txt');
+    const get = fake.getNode.bind(fake);
+    let read!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { read = resolve; });
+    const release = new Promise<void>((resolve) => { resume = resolve; });
+    fake.getNode = async (nodeUid: string) => {
+      const node = await get(nodeUid);
+      if (nodeUid === uid) { fake.getNode = get; read(); await release; }
+      return node;
+    };
+    const event = mirror.applyEvent({ type: 'node_updated', nodeUid: uid, parentUid: root, isTrashed: false, eventId: '10', scopeId: 'scope-1' });
+    await paused;
+    const ownStamp = mirror.beginRead();
+    const oldOwn = await get(uid);
+    await fake.rename(uid, 'new.txt');
+    await mirror.fullRefresh();
+    resume();
+    await event;
+    if (oldOwn === null) throw new Error('missing own read');
+    mirror.applyOwnChange({ type: 'upsert', node: oldOwn }, ownStamp);
+    mirror.endRead(ownStamp);
+    expect(mirror.view().items.get(uid)?.name).toBe('new.txt');
+  });
+
+  it('keeps a new node omitted by an older listing and releases removal tombstones', async () => {
+    const { fake, root } = seedTree();
+    const mirror = new RemoteMirror(fake, root);
+    await mirror.fullRefresh();
+    const list = fake.listChildren.bind(fake);
+    let listed!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { listed = resolve; });
+    const release = new Promise<void>((resolve) => { resume = resolve; });
+    fake.listChildren = async (parentUid: string) => {
+      const children = await list(parentUid);
+      if (parentUid === root) { listed(); await release; }
+      return children;
+    };
+    const refreshing = mirror.fullRefresh();
+    await paused;
+    const fresh = fake.seedFile(root, 'fresh.txt', 'F');
+    mirror.applyOwnChange({ type: 'upsert', node: fresh });
+    const aUid = [...mirror.view().items.values()].find((item) => item.name === 'a.txt')?.uid;
+    if (aUid === undefined) throw new Error('missing a.txt');
+    await mirror.applyEvent({ type: 'node_deleted', nodeUid: aUid, parentUid: root, eventId: '11', scopeId: 'scope-1' });
+    expect(mirror.tombstoneCount).toBeGreaterThan(0);
+    resume();
+    await refreshing;
+    expect(mirror.view().items.has(fresh.uid)).toBe(true);
+    expect(mirror.view().items.has(aUid)).toBe(false);
+    expect(mirror.tombstoneCount).toBe(0);
+  });
+
+  it('does not restore a newly discovered child after its folder was removed', async () => {
+    const { fake, root } = seedTree();
+    const mirror = new RemoteMirror(fake, root);
+    await mirror.fullRefresh();
+    const subUid = [...mirror.view().items.values()].find((item) => item.name === 'sub')?.uid;
+    if (subUid === undefined) throw new Error('missing sub');
+    const fresh = fake.seedFile(subUid, 'new.txt', 'N');
+    const list = fake.listChildren.bind(fake);
+    let listed!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { listed = resolve; });
+    const release = new Promise<void>((resolve) => { resume = resolve; });
+    fake.listChildren = async (parentUid: string) => {
+      const children = await list(parentUid);
+      if (parentUid === subUid) { listed(); await release; }
+      return children;
+    };
+    const refreshing = mirror.fullRefresh();
+    await paused;
+    await mirror.applyEvent({ type: 'node_deleted', nodeUid: subUid, parentUid: root, eventId: '12', scopeId: 'scope-1' });
+    resume();
+    await refreshing;
+    expect(mirror.view().items.has(subUid)).toBe(false);
+    expect(mirror.view().items.has(fresh.uid)).toBe(false);
+    expect(mirror.tombstoneCount).toBe(0);
+  });
+
+  it('coalesces refresh requests into one follow-up and never moves asOf backwards', async () => {
+    const { fake, root } = seedTree();
+    let now = 100;
+    const mirror = new RemoteMirror(fake, root, () => now);
+    const list = fake.listChildren.bind(fake);
+    let listed!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { listed = resolve; });
+    const release = new Promise<void>((resolve) => { resume = resolve; });
+    let active = 0;
+    let maximum = 0;
+    let rootCalls = 0;
+    fake.listChildren = async (parentUid: string) => {
+      if (parentUid === root) { active++; maximum = Math.max(maximum, active); rootCalls++; }
+      const children = await list(parentUid);
+      if (parentUid === root && rootCalls === 1) { listed(); await release; }
+      if (parentUid === root) active--;
+      return children;
+    };
+    const first = mirror.fullRefresh();
+    await paused;
+    const second = mirror.fullRefresh();
+    const third = mirror.fullRefresh();
+    expect(third).toBe(second);
+    now = 200;
+    mirror.markPolled(now);
+    resume();
+    await Promise.all([first, second, third]);
+    expect(rootCalls).toBe(2);
+    expect(maximum).toBe(1);
+    expect(mirror.view().asOf).toBe(200);
+  });
+
+  it('runs a queued refresh after the active listing fails', async () => {
+    const { fake, root } = seedTree();
+    const mirror = new RemoteMirror(fake, root);
+    const list = fake.listChildren.bind(fake);
+    let listed!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { listed = resolve; });
+    const release = new Promise<void>((resolve) => { resume = resolve; });
+    let rootCalls = 0;
+    fake.listChildren = async (parentUid: string) => {
+      if (parentUid === root && ++rootCalls === 1) { listed(); await release; throw new Error('listing failed'); }
+      return list(parentUid);
+    };
+    const first = mirror.fullRefresh();
+    await paused;
+    const followUp = mirror.fullRefresh();
+    resume();
+    await expect(first).rejects.toThrow('listing failed');
+    await followUp;
+    expect(rootCalls).toBe(2);
+    expect(mirror.isComplete).toBe(true);
+    expect(mirror.view().available).toBe(true);
+  });
+
+  it('queues a new follow-up when a request arrives during the previous follow-up', async () => {
+    const { fake, root } = seedTree();
+    const mirror = new RemoteMirror(fake, root);
+    const list = fake.listChildren.bind(fake);
+    const started: (() => void)[] = [];
+    const released: (() => void)[] = [];
+    const atStart = [0, 1].map(() => new Promise<void>((resolve) => { started.push(resolve); }));
+    const release = [0, 1].map(() => new Promise<void>((resolve) => { released.push(resolve); }));
+    let rootCalls = 0;
+    fake.listChildren = async (parentUid: string) => {
+      if (parentUid === root) {
+        const call = rootCalls++;
+        if (call < 2) { started[call]?.(); await release[call]; }
+      }
+      return list(parentUid);
+    };
+    const first = mirror.fullRefresh();
+    await atStart[0];
+    const second = mirror.fullRefresh();
+    released[0]?.();
+    await atStart[1];
+    const third = mirror.fullRefresh();
+    expect(third).not.toBe(second);
+    released[1]?.();
+    await Promise.all([first, second, third]);
+    expect(rootCalls).toBe(3);
+  });
+
+  it('orders arbitrary overlapping updates and removals by read start', () => {
+    fc.assert(fc.property(
+      fc.array(fc.record({ present: fc.boolean(), name: fc.string({ minLength: 1, maxLength: 8 }), finishOrder: fc.integer() }), { minLength: 1, maxLength: 25 }),
+      (observations) => {
+        const { fake, root } = seedTree();
+        const mirror = new RemoteMirror(fake, root);
+        const node = fake.seedFile(root, 'target.txt', 'T');
+        const stamped = observations.map((observation, index) => ({ ...observation, index, stamp: mirror.beginRead() }));
+        for (const observation of [...stamped].sort((a, b) => a.finishOrder - b.finishOrder || a.index - b.index)) {
+          mirror.applyOwnChange(observation.present ? { type: 'upsert', node: { ...node, name: observation.name } } : { type: 'remove', uid: node.uid }, observation.stamp);
+          mirror.endRead(observation.stamp);
+        }
+        const latest = observations.at(-1);
+        expect(mirror.view().items.get(node.uid)?.name).toBe(latest?.present ? latest.name : undefined);
+        expect(mirror.tombstoneCount).toBe(0);
+      },
+    ), { numRuns: 100 });
   });
 });
 

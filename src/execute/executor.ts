@@ -38,6 +38,7 @@ export class VerificationError extends Error {
 interface ActResult {
   /** Remote nodes changed by this operation, reported to the caller at commit. */
   remoteChanges?: RemoteChange[];
+  remoteStamp?: number | undefined;
   /** Rows to upsert at commit. */
   upserts: BaselineRow[];
   /** Paths to remove from the baseline at commit (subtree). */
@@ -201,6 +202,12 @@ export class Executor {
     this.ctx.audit.append({ kind: 'plan', op: op.kind, message: `planned ${describe(op)}`, path: relPathOf(op), ...(entry.nodeUid !== null ? { nodeUid: entry.nodeUid } : {}), details: { journalId: entry.id, evidence: op.evidence } });
 
     for (let attempt = 1; ; attempt++) {
+      const observations: number[] = [];
+      const observe = (): number | undefined => {
+        const stamp = this.ctx.beginRemoteObservation?.();
+        if (stamp !== undefined) observations.push(stamp);
+        return stamp;
+      };
       try {
         await this.step('precheck', op, attempt);
         const pre = await this.precheck(op);
@@ -219,7 +226,7 @@ export class Executor {
         this.emit({ type: 'operation_started', operation: op, attempt });
 
         await this.step('act', op, attempt);
-        const result = await this.act(op, attempt);
+        const result = await this.act(op, attempt, observe);
 
         await this.step('verify', op, attempt);
         await this.step('commit', op, attempt);
@@ -258,7 +265,7 @@ export class Executor {
             // cancelled while waiting
           }
           // Before retrying a mutation, check whether it already took effect.
-          const landed = await this.alreadyApplied(op).catch(() => null);
+          const landed = await this.alreadyApplied(op, observe).catch(() => null);
           if (landed !== null) {
             this.commit(entry.id, landed);
             this.ctx.audit.append({ kind: 'execute', op: op.kind, message: `completed ${describe(op)} (already applied before retry)`, path: relPathOf(op), outcome: 'ok', details: { journalId: entry.id, ...landed.outcome } });
@@ -282,6 +289,8 @@ export class Executor {
         this.ctx.audit.append({ kind: 'execute', op: op.kind, message: `failed ${describe(op)}: ${message}`, path: relPathOf(op), outcome: 'failed', error: message, details: { journalId: entry.id, attempt } });
         this.emit({ type: 'operation_failed', operation: op, error: message, retryable: false });
         return 'failed';
+      } finally {
+        for (const stamp of observations) this.ctx.endRemoteObservation?.(stamp);
       }
     }
   }
@@ -418,15 +427,17 @@ export class Executor {
     };
   }
 
-  private async act(op: Operation, attempt: number): Promise<ActResult> {
+  private async act(op: Operation, attempt: number, observe: () => number | undefined): Promise<ActResult> {
     const { remote, root } = this.ctx;
     switch (op.kind) {
       case 'create_remote_folder': {
         const parentUid = this.remoteParentUid(op.relPath);
         const st = statSync(path.join(root, op.relPath));
         const node = await remote.createFolder(parentUid, nameOf(op.relPath), new Date(st.mtimeMs));
+        // createFolder returns the verified node itself; stamp that response on arrival.
+        const remoteStamp = observe();
         this.createdRemoteDirs.set(op.relPath, node.uid);
-        return { remoteChanges: [{ type: 'upsert', node }], upserts: [this.localRow(op.relPath, 'dir', node, null)], removeSubtrees: [], renames: [], outcome: { nodeUid: node.uid } };
+        return { remoteChanges: [{ type: 'upsert', node }], remoteStamp, upserts: [this.localRow(op.relPath, 'dir', node, null)], removeSubtrees: [], renames: [], outcome: { nodeUid: node.uid } };
       }
       case 'create_local_folder': {
         const node = await remote.getNode(op.remoteUid);
@@ -443,12 +454,13 @@ export class Executor {
           onProgress: (bytes) => { this.emit({ type: 'transfer_progress', operation: op, bytes, total }); },
           signal: this.cancel.signal,
         });
+        const remoteStamp = observe();
         const node = await remote.getNode(uploaded.nodeUid);
         if (node === null) throw new VerificationError(`uploaded node ${uploaded.nodeUid} cannot be read back`);
         // The local file must still be what we hashed.
         const local = fingerprintMismatch(op.relPath, op.expectedLocal, root);
         if (local !== null) throw new PreconditionError(`local file changed during upload: ${local}`);
-        return { remoteChanges: [{ type: 'upsert', node }], upserts: [this.localRow(op.relPath, 'file', node, uploaded.sha1)], removeSubtrees: [], renames: [], outcome: { nodeUid: node.uid, revisionUid: uploaded.revisionUid, sha1: uploaded.sha1, size: uploaded.size, attempt } };
+        return { remoteChanges: [{ type: 'upsert', node }], remoteStamp, upserts: [this.localRow(op.relPath, 'file', node, uploaded.sha1)], removeSubtrees: [], renames: [], outcome: { nodeUid: node.uid, revisionUid: uploaded.revisionUid, sha1: uploaded.sha1, size: uploaded.size, attempt } };
       }
       case 'download': {
         const node = await remote.getNode(op.remoteUid);
@@ -485,15 +497,16 @@ export class Executor {
         if (node === null) throw new PreconditionError(`remote node ${op.remoteUid} vanished`);
         if (node.parentUid !== targetParent) node = await remote.move(op.remoteUid, targetParent);
         if (node.name !== nameOf(op.to)) node = await remote.rename(op.remoteUid, nameOf(op.to));
+        const remoteStamp = observe();
         const verify = await remote.getNode(op.remoteUid);
         if (verify?.parentUid !== targetParent || verify.name !== nameOf(op.to)) throw new VerificationError(`remote node ${op.remoteUid} is not at ${op.to} after move`);
         // Remote first, local follows (conflict resolution plans a move_local right after): until
         // the local item is at `to`, the baseline keeps describing it at `from`, and the move_local
         // records the new location. A failed local move then still reads as a remote rename.
-        if (!existsSync(path.join(root, op.to))) return { remoteChanges: [{ type: 'upsert', node: verify }], upserts: [], removeSubtrees: [], renames: [], outcome: { from: op.from, to: op.to, localMoveFollows: true } };
+        if (!existsSync(path.join(root, op.to))) return { remoteChanges: [{ type: 'upsert', node: verify }], remoteStamp, upserts: [], removeSubtrees: [], renames: [], outcome: { from: op.from, to: op.to, localMoveFollows: true } };
         const row = this.ctx.baseline.byPath(op.baselineFrom ?? op.from);
         const kind = verify.type === 'folder' ? 'dir' : 'file';
-        return { remoteChanges: [{ type: 'upsert', node: verify }], upserts: [this.localRow(op.to, kind, verify, row?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.baselineFrom ?? op.from, to: op.to }], outcome: { from: op.from, to: op.to } };
+        return { remoteChanges: [{ type: 'upsert', node: verify }], remoteStamp, upserts: [this.localRow(op.to, kind, verify, row?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.baselineFrom ?? op.from, to: op.to }], outcome: { from: op.from, to: op.to } };
       }
       case 'recycle_local': {
         const item = this.ctx.recycle.recycle(op.relPath, 'deleted remotely');
@@ -501,9 +514,10 @@ export class Executor {
       }
       case 'trash_remote': {
         await remote.trash([op.remoteUid]);
+        const remoteStamp = observe();
         const verify = await remote.getNode(op.remoteUid);
         if (verify !== null && !verify.isTrashed) throw new VerificationError(`remote node ${op.remoteUid} is not trashed after trash`);
-        return { remoteChanges: [verify === null ? { type: 'remove', uid: op.remoteUid } : { type: 'upsert', node: verify }], upserts: [], removeSubtrees: [op.relPath], renames: [], outcome: { nodeUid: op.remoteUid } };
+        return { remoteChanges: [verify === null ? { type: 'remove', uid: op.remoteUid } : { type: 'upsert', node: verify }], remoteStamp, upserts: [], removeSubtrees: [op.relPath], renames: [], outcome: { nodeUid: op.remoteUid } };
       }
       case 'update_baseline':
       case 'remove_baseline':
@@ -512,47 +526,52 @@ export class Executor {
   }
 
   /** After a retryable failure of unknown outcome: did the mutation already land? */
-  private async alreadyApplied(op: Operation): Promise<ActResult | null> {
+  private async alreadyApplied(op: Operation, observe: () => number | undefined): Promise<ActResult | null> {
     const { remote } = this.ctx;
     switch (op.kind) {
       case 'upload': {
         if (op.mode === 'revision' && op.remoteUid !== undefined) {
+          const remoteStamp = observe();
           const node = await remote.getNode(op.remoteUid);
           if (node !== null && node.claimedSha1 === op.expectedLocal.sha1 && op.expectedLocal.sha1 !== undefined) {
-            return { remoteChanges: [{ type: 'upsert', node }], upserts: [this.localRow(op.relPath, 'file', node, node.claimedSha1 ?? null)], removeSubtrees: [], renames: [], outcome: { nodeUid: node.uid, revisionUid: node.revisionUid, landedBeforeRetry: true } };
+            return { remoteChanges: [{ type: 'upsert', node }], remoteStamp, upserts: [this.localRow(op.relPath, 'file', node, node.claimedSha1 ?? null)], removeSubtrees: [], renames: [], outcome: { nodeUid: node.uid, revisionUid: node.revisionUid, landedBeforeRetry: true } };
           }
           return null;
         }
         const parentUid = this.remoteParentUid(op.relPath);
+        const remoteStamp = observe();
         const children = await remote.listChildren(parentUid);
         const match = children.find((c) => c.name === nameOf(op.relPath) && !c.isTrashed && c.type === 'file');
         const expectedSha1 = op.expectedLocal.sha1;
         if (match !== undefined && expectedSha1 !== undefined && match.claimedSha1 === expectedSha1) {
-          return { remoteChanges: [{ type: 'upsert', node: match }], upserts: [this.localRow(op.relPath, 'file', match, expectedSha1)], removeSubtrees: [], renames: [], outcome: { nodeUid: match.uid, revisionUid: match.revisionUid, landedBeforeRetry: true } };
+          return { remoteChanges: [{ type: 'upsert', node: match }], remoteStamp, upserts: [this.localRow(op.relPath, 'file', match, expectedSha1)], removeSubtrees: [], renames: [], outcome: { nodeUid: match.uid, revisionUid: match.revisionUid, landedBeforeRetry: true } };
         }
         return null;
       }
       case 'trash_remote': {
+        const remoteStamp = observe();
         const node = await remote.getNode(op.remoteUid);
         if (node !== null && !node.isTrashed) return null;
-        return { remoteChanges: [node === null ? { type: 'remove', uid: op.remoteUid } : { type: 'upsert', node }], upserts: [], removeSubtrees: [op.relPath], renames: [], outcome: { nodeUid: op.remoteUid, landedBeforeRetry: true } };
+        return { remoteChanges: [node === null ? { type: 'remove', uid: op.remoteUid } : { type: 'upsert', node }], remoteStamp, upserts: [], removeSubtrees: [op.relPath], renames: [], outcome: { nodeUid: op.remoteUid, landedBeforeRetry: true } };
       }
       case 'move_remote': {
+        const remoteStamp = observe();
         const node = await remote.getNode(op.remoteUid);
         if (node !== null && node.parentUid === this.remoteParentUid(op.to) && node.name === nameOf(op.to)) {
-          if (!existsSync(path.join(this.ctx.root, op.to))) return { remoteChanges: [{ type: 'upsert', node }], upserts: [], removeSubtrees: [], renames: [], outcome: { landedBeforeRetry: true, localMoveFollows: true } };
+          if (!existsSync(path.join(this.ctx.root, op.to))) return { remoteChanges: [{ type: 'upsert', node }], remoteStamp, upserts: [], removeSubtrees: [], renames: [], outcome: { landedBeforeRetry: true, localMoveFollows: true } };
           const row = this.ctx.baseline.byPath(op.baselineFrom ?? op.from);
-          return { remoteChanges: [{ type: 'upsert', node }], upserts: [this.localRow(op.to, node.type === 'folder' ? 'dir' : 'file', node, row?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.baselineFrom ?? op.from, to: op.to }], outcome: { landedBeforeRetry: true } };
+          return { remoteChanges: [{ type: 'upsert', node }], remoteStamp, upserts: [this.localRow(op.to, node.type === 'folder' ? 'dir' : 'file', node, row?.localSha1 ?? null)], removeSubtrees: [], renames: [{ from: op.baselineFrom ?? op.from, to: op.to }], outcome: { landedBeforeRetry: true } };
         }
         return null;
       }
       case 'create_remote_folder': {
         const parentUid = this.remoteParentUid(op.relPath);
+        const remoteStamp = observe();
         const children = await remote.listChildren(parentUid);
         const match = children.find((c) => c.name === nameOf(op.relPath) && !c.isTrashed && c.type === 'folder');
         if (match === undefined) return null;
         this.createdRemoteDirs.set(op.relPath, match.uid);
-        return { remoteChanges: [{ type: 'upsert', node: match }], upserts: [this.localRow(op.relPath, 'dir', match, null)], removeSubtrees: [], renames: [], outcome: { nodeUid: match.uid, landedBeforeRetry: true } };
+        return { remoteChanges: [{ type: 'upsert', node: match }], remoteStamp, upserts: [this.localRow(op.relPath, 'dir', match, null)], removeSubtrees: [], renames: [], outcome: { nodeUid: match.uid, landedBeforeRetry: true } };
       }
       case 'create_local_folder':
       case 'download':
@@ -573,7 +592,7 @@ export class Executor {
       for (const row of result.upserts) this.ctx.baseline.upsert(row);
       this.ctx.journal.complete(journalId, result.outcome);
     });
-    for (const change of result.remoteChanges ?? []) this.ctx.onRemoteChange?.(change);
+    for (const change of result.remoteChanges ?? []) this.ctx.onRemoteChange?.(change, result.remoteStamp);
   }
 }
 
