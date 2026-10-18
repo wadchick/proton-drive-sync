@@ -6,6 +6,16 @@ import type { QuarantineEntry, QuarantineRepo } from '../state/misc.ts';
 
 export type QuarantineReason = 'digest_mismatch' | 'remote_metadata_inconsistent' | 'unreadable' | 'unknown_outcome' | 'verification_failed' | 'manual';
 
+/**
+ * Retention bounds. An editor of a shared folder can churn distinct files that
+ * fail integrity checks, so the open set and the released history are both
+ * capped; the oldest open entry is released (and re-reconciled from scratch,
+ * which re-quarantines it if the problem persists) when a new one would exceed
+ * the cap.
+ */
+export const MAX_OPEN_QUARANTINE = 200;
+export const MAX_RELEASED_QUARANTINE = 200;
+
 export class QuarantineService {
   constructor(
     private readonly repo: QuarantineRepo,
@@ -23,6 +33,16 @@ export class QuarantineService {
       outcome: 'skipped',
       details: { id: entry.id, ...(typeof item.details === 'object' && item.details !== null ? (item.details as Record<string, unknown>) : {}) },
     });
+    for (const evicted of this.repo.trim(MAX_OPEN_QUARANTINE, MAX_RELEASED_QUARANTINE)) {
+      this.audit.append({
+        kind: 'safety',
+        op: 'evict_quarantine',
+        message: `released quarantined item ${String(evicted.id)} to stay within ${String(MAX_OPEN_QUARANTINE)} open entries; it will be re-reconciled from scratch`,
+        ...(evicted.relPath !== null ? { path: evicted.relPath } : {}),
+        ...(evicted.nodeUid !== null ? { nodeUid: evicted.nodeUid } : {}),
+        outcome: 'ok',
+      });
+    }
     return entry;
   }
 

@@ -26,8 +26,9 @@ export interface VerifiedUpload {
   revisionUid: string;
   sha1: string;
   size: number;
+  /** The local file's stat while it was hashed and uploaded; `sha1` is the digest of that content. */
+  local: { dev: number; ino: number; size: number; mtimeMs: number };
 }
-
 /** Hex SHA1 of a file, streamed. */
 export async function sha1File(filePath: string): Promise<{ sha1: string; size: number }> {
   const hash = createHash('sha1');
@@ -172,9 +173,8 @@ export async function uploadVerified(remote: RemoteDrive, target: UploadTarget, 
   const result = target.kind === 'new'
     ? await remote.uploadNewFile(target.parentUid, target.name, source, options)
     : await remote.uploadNewRevision(target.nodeUid, source, options);
-
   const after = await stat(filePath).catch(() => undefined);
-  if (after?.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+  if (after?.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ino !== before.ino) {
     throw new RemoteError(`${filePath} changed during upload; the uploaded revision ${result.revisionUid} may be stale`, 'validation', true, {
       details: { nodeUid: result.nodeUid, revisionUid: result.revisionUid },
     });
@@ -191,5 +191,5 @@ export async function uploadVerified(remote: RemoteDrive, target: UploadTarget, 
       details: { nodeUid: result.nodeUid, revisionUid: result.revisionUid, sha1, size },
     });
   }
-  return { nodeUid: result.nodeUid, revisionUid: result.revisionUid, sha1, size };
+  return { nodeUid: result.nodeUid, revisionUid: result.revisionUid, sha1, size, local: { dev: before.dev, ino: before.ino, size: before.size, mtimeMs: before.mtimeMs } };
 }

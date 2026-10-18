@@ -203,7 +203,8 @@ describe('conflict, brake, and quarantine through the CLI and socket', () => {
     expect(heldId).toMatch(/^held-/);
 
     // Reject via the raw control socket, by the real id: nothing is trashed.
-    await socketRequest({ cmd: 'reject', args: { id: heldId } });
+    // The reply carries only a count: the operations themselves never leave the engine.
+    expect(await socketRequest({ cmd: 'reject', args: { id: heldId } })).toEqual({ discarded: 4 });
     const afterReject = await socketRequest<EngineStatus>({ cmd: 'status' });
     expect(afterReject.attention.heldPlan, 'reject clears the held plan').toBeNull();
     expect(fake.trashedUids(), 'reject discards the deletes').toEqual([]);

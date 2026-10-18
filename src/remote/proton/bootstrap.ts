@@ -9,6 +9,7 @@ import path from 'node:path';
 import { CryptoProxy } from '@protontech/crypto';
 import { Api as CryptoApi } from '@protontech/crypto/proxy/endpoint/api.ts';
 import { OpenPGPCryptoWithCryptoProxy, ProtonDriveClient, VERSION as SDK_VERSION, type OpenPGPCrypto } from '@protontech/drive-sdk';
+import { config as openPgpConfig } from 'openpgp';
 
 import type { AppPaths } from '../../config/paths.js';
 import type { SecretStore } from '../../config/secretStore.js';
@@ -85,10 +86,22 @@ function getOrCreateClientUid(dataDir: string, logger: Logger): string {
   return clientUid;
 }
 
+/**
+ * Upper bound on what one OpenPGP compressed packet may inflate to. Proton Drive
+ * blocks hold at most 4 MiB of plaintext (SDK `FILE_CHUNK_SIZE`) and every other
+ * message the engine decrypts (names, keys, extended attributes, manifests) is far
+ * smaller, so anything inflating past one block plus its packet framing is a
+ * decompression bomb, not a file. openpgp's default is `Infinity`, under which a
+ * small authenticated block from a shared folder could expand in RAM before
+ * `transfer.ts` ever sees a byte count.
+ */
+export const MAX_DECOMPRESSED_MESSAGE_BYTES = 5 * 1024 * 1024;
+
 let cryptoInitialised = false;
-function initOpenPgp(): OpenPGPCrypto {
+export function initOpenPgp(): OpenPGPCrypto {
   if (!cryptoInitialised) {
     CryptoApi.init({});
+    openPgpConfig.maxDecompressedMessageSize = MAX_DECOMPRESSED_MESSAGE_BYTES;
     CryptoProxy.setEndpoint(new CryptoApi(), (endpoint) => endpoint.clearKeyStore());
     cryptoInitialised = true;
   }

@@ -14,6 +14,8 @@ export interface AuditLogOptions {
   maxBytes?: number;
   /** Delete rotated files older than this many days. Default: 90 */
   retentionDays?: number;
+  /** Keep at most this many rotated files, newest first. Default: 10 */
+  maxRotatedFiles?: number;
   /** Injectable clock for tests. */
   now?: () => Date;
   registry?: SecretRegistry;
@@ -29,6 +31,8 @@ const ROTATED_SUFFIX = /^(.*)\.(\d{8}T\d{6}\d{3}Z)(?:-(\d+))?\.log$/;
  * - Rotation renames the active file and starts a fresh one; no entry is lost.
  * - Rotated files older than the retention period are removed by `purgeRotated()`,
  *   which only ever touches files produced by this logger.
+ * - Every rotation also drops the oldest rotated files beyond `maxRotatedFiles`, so
+ *   a run of entries nobody chose (a churning shared folder) is bounded on disk.
  */
 export class AuditLog {
   readonly dir: string;
@@ -36,6 +40,7 @@ export class AuditLog {
   private readonly baseName: string;
   private readonly maxBytes: number;
   private readonly retentionMs: number;
+  private readonly maxRotatedFiles: number;
   private readonly now: () => Date;
   private readonly registry: SecretRegistry;
   private seq = 0;
@@ -48,6 +53,7 @@ export class AuditLog {
     this.activePath = path.join(this.dir, fileName);
     this.maxBytes = options.maxBytes ?? 10 * 1024 * 1024;
     this.retentionMs = (options.retentionDays ?? 90) * 24 * 60 * 60 * 1000;
+    this.maxRotatedFiles = options.maxRotatedFiles ?? 10;
     this.now = options.now ?? (() => new Date());
     this.registry = options.registry ?? secretRegistry;
     mkdirSync(this.dir, { recursive: true });
@@ -94,6 +100,7 @@ export class AuditLog {
       target = path.join(this.dir, `${this.baseName}.${stamp}-${this.rotationCounter}.log`);
     }
     renameSync(this.activePath, target);
+    this.purgeRotated();
   }
 
   /** All log files, oldest first, active file last. */
@@ -126,17 +133,18 @@ export class AuditLog {
     return { entries, malformed };
   }
 
-  /** Delete rotated files older than the retention period. Returns removed paths. */
+  /** Delete rotated files older than the retention period or beyond `maxRotatedFiles`, oldest first. Returns removed paths. */
   purgeRotated(): string[] {
     const cutoff = this.now().getTime() - this.retentionMs;
+    const rotated = this.files().filter((file) => file !== this.activePath);
+    const excess = Math.max(0, rotated.length - this.maxRotatedFiles);
     const removed: string[] = [];
-    for (const file of this.files()) {
-      if (file === this.activePath) continue;
-      if (statSync(file).mtimeMs < cutoff) {
+    rotated.forEach((file, index) => {
+      if (index < excess || statSync(file).mtimeMs < cutoff) {
         unlinkSync(file);
         removed.push(file);
       }
-    }
+    });
     return removed;
   }
 }

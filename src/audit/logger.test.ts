@@ -39,7 +39,7 @@ describe('AuditLog', () => {
   });
 
   it('rotates by size without losing a single entry and parses every line back', () => {
-    const log = new AuditLog({ dir, maxBytes: 600, now: clock(), registry: new SecretRegistry() });
+    const log = new AuditLog({ dir, maxBytes: 600, maxRotatedFiles: 1000, now: clock(), registry: new SecretRegistry() });
     const total = 200;
     for (let i = 0; i < total; i++) {
       log.append({ kind: 'execute', message: `entry ${i}`, path: `file-${i}.bin`, outcome: 'ok' });
@@ -70,7 +70,7 @@ describe('AuditLog', () => {
 
   it('purges only rotated files older than retention, never the active file', () => {
     const now = clock();
-    const log = new AuditLog({ dir, maxBytes: 200, retentionDays: 30, now, registry: new SecretRegistry() });
+    const log = new AuditLog({ dir, maxBytes: 200, retentionDays: 30, maxRotatedFiles: 1000, now, registry: new SecretRegistry() });
     for (let i = 0; i < 30; i++) log.append({ kind: 'plan', message: 'y'.repeat(60) });
     const rotated = log.files().filter((f) => f !== log.activePath);
     expect(rotated.length).toBeGreaterThan(0);
@@ -82,6 +82,18 @@ describe('AuditLog', () => {
     expect(removed).toEqual([victim]);
     expect(log.files()).toContain(log.activePath);
     expect(log.files()).not.toContain(victim);
+  });
+
+  it('keeps at most maxRotatedFiles rotated files, dropping the oldest, so churn is bounded on disk', () => {
+    const log = new AuditLog({ dir, maxBytes: 200, maxRotatedFiles: 3, now: clock(), registry: new SecretRegistry() });
+    for (let i = 0; i < 200; i++) log.append({ kind: 'plan', message: 'z'.repeat(60) });
+    const rotated = log.files().filter((f) => f !== log.activePath);
+    expect(rotated).toHaveLength(3);
+    expect(log.files().at(-1)).toBe(log.activePath);
+    // Oldest first: what survived is the newest three, and every line is still whole.
+    const { entries, malformed } = log.readAll();
+    expect(malformed).toEqual([]);
+    expect(entries.at(-1)?.seq).toBe(200);
   });
 
   it('reports malformed lines instead of dropping them silently', () => {

@@ -530,6 +530,20 @@ describe('clientScript', () => {
     document.documentElement.classList.remove('omarchy');
   });
 
+  it('renders when a production build renames the inlined functions', async () => {
+    fixture();
+    const snapshot = dataFor(statusWith({ state: 'idle', counts: { ...initialStatus(false, 0).counts, localFiles: 7 } }));
+    vi.stubGlobal('fetch', () => Promise.resolve({ ok: true, json: () => Promise.resolve(snapshot) }));
+    const bundledScript = clientScript()
+      .replace('function applySnapshot(', 'function a(')
+      .replace('function advanceStatus(', 'function b(');
+    window.eval(bundledScript);
+    await (window as unknown as { refresh: () => Promise<void> }).refresh();
+    expect(el('state').textContent).toBe('idle');
+    expect(stat('Local files')).toBe('7');
+    expect(el('conflicts').textContent).toContain('Conflicts');
+  });
+
   it('shows an action error and clears it after the next success', async () => {
     fixture();
     let pauses = 0;

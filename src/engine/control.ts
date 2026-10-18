@@ -32,6 +32,32 @@ export type ControlCommand =
   | { cmd: 'reload_session' }
   | { cmd: 'quit' };
 
+/**
+ * Longest list a socket reply carries. The bar panel parses every reply inside
+ * the shared shell process, so the engine never hands it an unbounded array;
+ * the totals travel in `status.attention`, and the full lists live on the
+ * details page, which reads the target directly.
+ */
+export const SHELL_LIST_LIMIT = 50;
+
+/**
+ * A status with every list cut to SHELL_LIST_LIMIT: the held plan's affected
+ * paths (total kept in `affectedTotal`), transfers and Proton document paths
+ * (totals in `counts`). In-process readers (tray, details page) keep the full
+ * status from the engine.
+ */
+export function forShell(status: EngineStatus): EngineStatus {
+  const held = status.attention.heldPlan;
+  const docs = status.protonDocumentPaths.slice(0, SHELL_LIST_LIMIT);
+  return {
+    ...status,
+    transfers: status.transfers.slice(0, SHELL_LIST_LIMIT),
+    attention: { ...status.attention, heldPlan: held === null ? null : { ...held, affected: held.affected.slice(0, SHELL_LIST_LIMIT), affectedTotal: held.affected.length } },
+    protonDocumentPaths: docs,
+    protonDocumentModifiedAt: Object.fromEntries(docs.map((p) => [p, status.protonDocumentModifiedAt[p] ?? 0])),
+  };
+}
+
 export interface ControlTarget {
   getStatus(): EngineStatus;
   pause(): void;
@@ -91,7 +117,7 @@ export class ControlServer {
       this.server?.once('error', reject);
       this.server?.listen(this.socketPath, () => { resolve(); });
     });
-    this.unsubscribe = this.target.onStatus((status) => { this.broadcast({ event: 'status', status }); });
+    this.unsubscribe = this.target.onStatus((status) => { this.broadcast({ event: 'status', status: forShell(status) }); });
   }
 
   private accept(socket: Socket): void {
@@ -112,7 +138,7 @@ export class ControlServer {
     });
     socket.on('close', () => this.clients.delete(socket));
     socket.on('error', () => this.clients.delete(socket));
-    this.send(socket, { event: 'status', status: this.target.getStatus() });
+    this.send(socket, { event: 'status', status: forShell(this.target.getStatus()) });
   }
 
   private async handleLine(socket: Socket, line: string): Promise<void> {
@@ -152,41 +178,44 @@ export class ControlServer {
     };
     switch (request.cmd) {
       case 'status':
-        return this.target.getStatus();
+        return forShell(this.target.getStatus());
       case 'pause':
         this.target.pause();
-        return this.target.getStatus();
+        return forShell(this.target.getStatus());
       case 'resume':
         this.target.resume();
-        return this.target.getStatus();
+        return forShell(this.target.getStatus());
       case 'sync_now':
         await this.target.syncNow();
-        return this.target.getStatus();
+        return forShell(this.target.getStatus());
       case 'confirm':
         await this.target.confirmHeldPlan(str('id'));
-        return this.target.getStatus();
-      case 'reject':
-        return this.target.rejectHeldPlan(str('id'));
+        return forShell(this.target.getStatus());
+      case 'reject': {
+        // The discarded operations stay in the engine (and its audit log); only their count leaves.
+        const discarded = this.target.rejectHeldPlan(str('id'));
+        return { discarded: Array.isArray(discarded) ? discarded.length : 0 };
+      }
       case 'conflicts':
-        return this.target.listConflicts();
+        return this.target.listConflicts().slice(0, SHELL_LIST_LIMIT);
       case 'resolve': {
         const choice = str('choice');
         if (choice !== 'keep_local' && choice !== 'keep_remote' && choice !== 'keep_both') throw new Error('choice must be keep_local, keep_remote or keep_both');
         await this.target.resolveConflict(num('id'), choice);
-        return this.target.listConflicts();
+        return this.target.listConflicts().slice(0, SHELL_LIST_LIMIT);
       }
       case 'quarantine':
-        return this.target.listQuarantine();
+        return this.target.listQuarantine().slice(0, SHELL_LIST_LIMIT);
       case 'release':
         this.target.releaseQuarantine(num('id'));
-        return this.target.listQuarantine();
+        return this.target.listQuarantine().slice(0, SHELL_LIST_LIMIT);
       case 'recycle':
-        return this.target.listRecycle();
+        return this.target.listRecycle().slice(0, SHELL_LIST_LIMIT);
       case 'details':
         return { url: this.target.detailUrl?.() ?? null };
       case 'reload_session':
         await this.target.reloadSession?.();
-        return this.target.getStatus();
+        return forShell(this.target.getStatus());
       case 'quit':
         setTimeout(() => void this.target.quit(), 10);
         return { quitting: true };

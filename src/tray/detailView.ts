@@ -461,8 +461,10 @@ export function advanceStatus(doc: Document): void {
 
 /** The browser script for the served page: the tested renderer plus the fetch/refresh glue. */
 export function clientScript(): string {
-  return `${applySnapshot.toString()}
-${advanceStatus.toString()}
+  // A production bundle may rename these functions. Bind the names used by the
+  // page explicitly instead of relying on Function#toString() preserving them.
+  return `const applySnapshot = ${applySnapshot.toString()};
+const advanceStatus = ${advanceStatus.toString()};
 function detailUi() {
   document.__detailUi ??= { actionError: '', sections: {} };
   return document.__detailUi;

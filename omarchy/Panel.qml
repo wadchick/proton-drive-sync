@@ -31,6 +31,10 @@ Panel {
   readonly property var conflicts: service && service.conflicts ? service.conflicts : []
   readonly property var quarantine: service && service.quarantine ? service.quarantine : []
   readonly property var transfers: status && status.transfers ? status.transfers : []
+  // The engine sends at most 50 rows of each list and keeps the true counts in its status.
+  readonly property int conflictTotal: Math.max(conflicts.length, status && status.attention ? Number(status.attention.conflicts) || 0 : 0)
+  readonly property int quarantineTotal: Math.max(quarantine.length, status && status.attention ? Number(status.attention.quarantined) || 0 : 0)
+  readonly property int heldTotal: held && held.affected ? Math.max(held.affected.length, Number(held.affectedTotal) || 0) : 0
   readonly property int skipped: status && status.counts ? Number(status.counts.protonDocuments) || 0 : 0
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
   readonly property color fg: root.barForeground
@@ -349,7 +353,7 @@ Panel {
               }
             }
           }
-          MoreLink { total: root.held && root.held.affected ? root.held.affected.length : 0 }
+          MoreLink { total: root.heldTotal }
           Row {
             spacing: Style.space(8)
             topPadding: Style.space(4)
@@ -377,7 +381,7 @@ Panel {
           visible: root.conflicts.length > 0
           width: parent.width
           spacing: Style.space(6)
-          SectionHeader { label: "Conflicts (" + root.conflicts.length + ")" }
+          SectionHeader { label: "Conflicts (" + root.conflictTotal + ")" }
           Repeater {
             model: Math.min(root.conflicts.length, root.listLimit)
             delegate: Item {
@@ -437,7 +441,7 @@ Panel {
               }
             }
           }
-          MoreLink { total: root.conflicts.length }
+          MoreLink { total: root.conflictTotal }
         }
 
         // ---------- Quarantine ----------
@@ -446,7 +450,7 @@ Panel {
           visible: root.quarantine.length > 0
           width: parent.width
           spacing: Style.space(6)
-          SectionHeader { label: "Quarantine (" + root.quarantine.length + ")" }
+          SectionHeader { label: "Quarantine (" + root.quarantineTotal + ")" }
           Repeater {
             model: Math.min(root.quarantine.length, root.listLimit)
             delegate: Item {
@@ -480,7 +484,7 @@ Panel {
               }
             }
           }
-          MoreLink { total: root.quarantine.length }
+          MoreLink { total: root.quarantineTotal }
         }
 
         // ---------- Transfers in progress ----------

@@ -66,7 +66,8 @@ describe('shell sources', () => {
   it('shows a few conflicts and links to the details page for the rest, opening nothing by itself', () => {
     expect(panel).toContain('readonly property int listLimit: 4');
     expect(panel).toContain('model: Math.min(root.conflicts.length, root.listLimit)');
-    expect(panel).toContain('MoreLink { total: root.conflicts.length }');
+    expect(panel).toContain('MoreLink { total: root.conflictTotal }');
+    expect(panel).toContain('status.attention.conflicts');
     // The overflow link opens the details page only when clicked.
     const more = /component MoreLink: Button \{[\s\S]*?\n {2}\}/.exec(panel)?.[0] ?? '';
     expect(more).toContain('" more in details"');
@@ -74,6 +75,19 @@ describe('shell sources', () => {
     expect(panel.match(/openExternal\(root\.doctor\.detailUrl\)/g), 'the details page opens from one place').toHaveLength(1);
     expect(panel).not.toMatch(/on[A-Z]\w*Changed:[^\n]*openDetails/);
     expect(panel).not.toContain('root.service.conflicts.length');
+  });
+
+  it('shows a few quarantine rows and counts the rest from status', () => {
+    expect(panel).toContain('model: Math.min(root.quarantine.length, root.listLimit)');
+    expect(panel).toContain('status.attention.quarantined');
+    expect(panel).toContain('MoreLink { total: root.quarantineTotal }');
+    expect(panel).not.toContain('root.service.quarantine.length');
+  });
+
+  it('shows a few held-plan rows and counts the rest from status', () => {
+    expect(panel).toContain('model: root.held && root.held.affected ? Math.min(root.held.affected.length, root.listLimit) : 0');
+    expect(panel).toContain('held.affectedTotal');
+    expect(panel).toContain('MoreLink { total: root.heldTotal }');
   });
 
   // Upstream's cut-off tooltips (9cc3838) were written for the previous panel. The redesigned

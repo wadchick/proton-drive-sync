@@ -98,7 +98,8 @@ export class PlanGate {
     const id = previous?.id ?? `held-${String(++this.seq)}`;
     const held: HeldPlan = { id, plan, verdict, heldAt: previous?.heldAt ?? this.now(), signature };
     this.held = held;
-    this.audit.append({
+    // One entry per decision: a re-plan of the same held work (every cycle while it waits) adds nothing.
+    if (previous === null) this.audit.append({
       kind: 'safety',
       op: 'brake',
       message: `plan held: ${verdict.reason ?? 'confirmation required'}`,
