@@ -78,8 +78,9 @@ export interface AtomicDownloadResult extends VerifiedDownload {
   tempPath: string;
   finalPath: string;
   recycledPrevious: boolean;
+  /** The placed file's stat as written, before anyone else could touch it; `sha1` describes that content. */
+  local: { dev: number; ino: number; size: number; mtimeMs: number };
 }
-
 /**
  * Download `node` and atomically place it at `relPath`.
  * `expectedLocal` describes the item expected at the target (undefined = must be absent).
@@ -105,6 +106,8 @@ export async function atomicDownload(
   try {
     if (options.signal?.aborted === true) throw new RemoteError(`download of ${relPath} cancelled before commit`, 'aborted', false);
     if (node.claimedModifiedAt !== undefined) await utimes(tempPath, node.claimedModifiedAt, node.claimedModifiedAt);
+    // The rename below keeps the inode, size and mtime, so this is the placed file's stat.
+    const written = statSync(tempPath);
     await options.beforeCommit?.();
     const mismatch = fingerprintMismatch(relPath, expectedLocal, root);
     if (mismatch !== null) throw new TargetChangedError(relPath, mismatch);
@@ -118,7 +121,7 @@ export async function atomicDownload(
       recycledPrevious = true;
     }
     await rename(tempPath, finalPath);
-    return { ...result, tempPath, finalPath, recycledPrevious };
+    return { ...result, tempPath, finalPath, recycledPrevious, local: { dev: written.dev, ino: written.ino, size: written.size, mtimeMs: written.mtimeMs } };
   } catch (error) {
     // Our own temp file only; the target is untouched.
     await unlink(tempPath).catch(() => undefined);
