@@ -9,7 +9,7 @@
  * operation boundaries.
  */
 import { existsSync, mkdirSync, statSync } from 'node:fs';
-import { mkdir, rename, stat } from 'node:fs/promises';
+import { rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { BaselineRow } from '../state/baseline.ts';
@@ -19,7 +19,7 @@ import { defaultSleep } from '../remote/proton/apiClient.js';
 import { uploadVerified } from '../remote/transfer.js';
 import { evidenceRow, movedEvidence, statEvidence, type LocalEvidence } from './evidence.js';
 import { atomicDownload, DiskFullError, fingerprintMismatch, TargetChangedError } from './localWrite.js';
-import { assertWritableInsideRoot } from '../safety/pathGuard.js';
+import { pinInsideRoot } from '../safety/pathGuard.js';
 import { SimulatedCrashError, type ExecutionSummary, type ExecutorContext, type ExecutorEvent, type ExecutorStep, type PlanForExecution, type RemoteChange } from './types.js';
 
 export class PreconditionError extends Error {
@@ -437,8 +437,12 @@ export class Executor {
       case 'create_local_folder': {
         const node = await remote.getNode(op.remoteUid);
         if (node === null) throw new PreconditionError(`remote folder ${op.remoteUid} vanished`);
-        assertWritableInsideRoot(root, op.relPath);
-        await mkdir(path.join(root, op.relPath), { recursive: false });
+        const target = pinInsideRoot(root, op.relPath);
+        try {
+          mkdirSync(target.path);
+        } finally {
+          target.close();
+        }
         return { upserts: [this.localRow(op.relPath, 'dir', node, statEvidence(root, op.relPath))], removeSubtrees: [], renames: [], outcome: { nodeUid: node.uid } };
       }
       case 'upload': {
@@ -468,16 +472,23 @@ export class Executor {
         return { upserts: [this.localRow(op.relPath, 'file', node, { ...result.local, sha1: result.sha1 })], removeSubtrees: [], renames: [], outcome: { sha1: result.sha1, size: result.size, verifiedAgainstClaim: result.verifiedAgainstClaim, recycledPrevious: result.recycledPrevious } };
       }
       case 'move_local': {
-        const from = path.join(root, op.from);
-        const to = path.join(root, op.to);
-        assertWritableInsideRoot(root, op.from);
-        assertWritableInsideRoot(root, op.to);
-        mkdirSync(path.dirname(to), { recursive: true });
-        assertWritableInsideRoot(root, op.to);
-        await rename(from, to);
+        // Both sides are pinned (ancestors held open) so a folder swapped for a symlink
+        // after the check cannot redirect the move.
+        const from = pinInsideRoot(root, op.from);
+        let st;
+        try {
+          const to = pinInsideRoot(root, op.to);
+          try {
+            await rename(from.path, to.path);
+            st = await stat(to.path);
+          } finally {
+            to.close();
+          }
+        } finally {
+          from.close();
+        }
         const node = await remote.getNode(op.remoteUid);
         if (node === null) throw new VerificationError(`remote node ${op.remoteUid} vanished after local move`);
-        const st = await stat(to);
         const row = this.ctx.baseline.byPath(op.baselineFrom ?? op.from);
         const kind = st.isDirectory() ? 'dir' : 'file';
         return {
