@@ -23,7 +23,7 @@ import type { LocalFingerprint } from '../reconcile/types.js';
 import { RemoteError, type RemoteDrive, type RemoteNode } from '../remote/interface.js';
 import { downloadVerified, type VerifiedDownload } from '../remote/transfer.js';
 import type { RecycleBin } from '../safety/recycle.js';
-import { assertWritableInsideRoot, UnsafePathError } from '../safety/pathGuard.js';
+import { assertWritableInsideRoot, pinInsideRoot, UnsafePathError } from '../safety/pathGuard.js';
 
 export class TargetChangedError extends Error {
   constructor(relPath: string, detail: string) {
@@ -59,10 +59,10 @@ export function isDiskFull(error: unknown): boolean {
 }
 
 /** Compare a stat result with an expected fingerprint; returns a description of the difference or null. */
-export function fingerprintMismatch(relPath: string, expected: LocalFingerprint | undefined, root: string): string | null {
+export function fingerprintMismatch(relPath: string, expected: LocalFingerprint | undefined, root: string, absPath = path.join(root, relPath)): string | null {
   let st;
   try {
-    st = statSync(path.join(root, relPath));
+    st = statSync(absPath);
   } catch {
     return expected === undefined ? null : `expected an existing item (ino ${String(expected.ino)}) but the path is missing`;
   }
@@ -109,18 +109,21 @@ export async function atomicDownload(
     // The rename below keeps the inode, size and mtime, so this is the placed file's stat.
     const written = statSync(tempPath);
     await options.beforeCommit?.();
-    const mismatch = fingerprintMismatch(relPath, expectedLocal, root);
-    if (mismatch !== null) throw new TargetChangedError(relPath, mismatch);
-    // Checked right before the writes: no ancestor may be a symlink out of the root.
-    assertWritableInsideRoot(root, relPath);
-    mkdirSync(path.dirname(finalPath), { recursive: true });
-    assertWritableInsideRoot(root, relPath);
+    // The ancestors are held open from here to the rename, so the target that was
+    // checked is the target that is written, even if a symlink replaces a folder meanwhile.
+    const target = pinInsideRoot(root, relPath);
     let recycledPrevious = false;
-    if (expectedLocal !== undefined) {
-      recycle.recycle(relPath, `replaced by remote revision ${node.revisionUid ?? 'unknown'}`);
-      recycledPrevious = true;
+    try {
+      const mismatch = fingerprintMismatch(relPath, expectedLocal, root, target.path);
+      if (mismatch !== null) throw new TargetChangedError(relPath, mismatch);
+      if (expectedLocal !== undefined) {
+        recycle.recycle(relPath, `replaced by remote revision ${node.revisionUid ?? 'unknown'}`);
+        recycledPrevious = true;
+      }
+      await rename(tempPath, target.path);
+    } finally {
+      target.close();
     }
-    await rename(tempPath, finalPath);
     return { ...result, tempPath, finalPath, recycledPrevious, local: { dev: written.dev, ino: written.ino, size: written.size, mtimeMs: written.mtimeMs } };
   } catch (error) {
     // Our own temp file only; the target is untouched.

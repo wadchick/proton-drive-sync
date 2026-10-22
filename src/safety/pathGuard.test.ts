@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,7 +8,7 @@ import { SecretRegistry } from '../audit/redact.js';
 import { atomicDownload } from '../execute/localWrite.js';
 import type { Operation, Plan } from '../reconcile/types.js';
 import { FakeRemote } from '../testing/fakeRemote.js';
-import { assertWritableInsideRoot, blockUnsyncableTargets, UnsafePathError } from './pathGuard.js';
+import { assertWritableInsideRoot, blockUnsyncableTargets, pinInsideRoot, UnsafePathError } from './pathGuard.js';
 import { RecycleBin } from './recycle.js';
 
 let dir: string;
@@ -77,6 +77,31 @@ describe('blockUnsyncableTargets', () => {
   it('leaves a plan untouched when nothing is unsyncable', () => {
     const p = plan([{ id: '1', kind: 'download', relPath: 'a.txt', remoteUid: 'a' }] as unknown as Operation[]);
     expect(blockUnsyncableTargets(p, [])).toBe(p);
+  });
+});
+
+describe('pinInsideRoot', () => {
+  it('a rename through the pin lands in the checked folder even after it is swapped for a symlink', () => {
+    mkdirSync(path.join(root, 'docs'));
+    writeFileSync(path.join(root, 'staged.txt'), 'new');
+    const pinned = pinInsideRoot(root, 'docs/file.txt');
+    // Another local account races: the real folder is moved aside and a symlink out of the root takes its name.
+    renameSync(path.join(root, 'docs'), path.join(root, 'docs.real'));
+    symlinkSync(outside, path.join(root, 'docs'));
+    renameSync(path.join(root, 'staged.txt'), pinned.path);
+    pinned.close();
+    expect(readdirSync(outside)).toEqual([]);
+    expect(readdirSync(path.join(root, 'docs.real'))).toEqual(['file.txt']);
+  });
+
+  it('creates missing folders and refuses a symlinked or non-directory ancestor', () => {
+    const pinned = pinInsideRoot(root, 'new/deeper/file.txt');
+    pinned.close();
+    expect(lstatSync(path.join(root, 'new', 'deeper')).isDirectory()).toBe(true);
+    symlinkSync(outside, path.join(root, 'linked'));
+    writeFileSync(path.join(root, 'plain'), 'x');
+    expect(() => pinInsideRoot(root, 'linked/secret.txt')).toThrow(/linked is a symlink/);
+    expect(() => pinInsideRoot(root, 'plain/child.txt')).toThrow(/plain is not a directory/);
   });
 });
 

@@ -6,12 +6,12 @@
  * user data; `purge()` is the single, explicit retention command and it logs
  * every path it removes.
  */
-import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import type { AuditLog } from '../audit/logger.js';
 import { INTERNAL_DIR_NAME } from '../config/paths.js';
-import { assertWritableInsideRoot } from './pathGuard.js';
+import { assertWritableInsideRoot, pinInsideRoot } from './pathGuard.js';
 
 export interface RecycledItem {
   /** Timestamp bucket (ms since epoch) the item was recycled in. */
@@ -48,25 +48,32 @@ export class RecycleBin {
     if (relPath === '' || relPath.startsWith('..') || path.isAbsolute(relPath)) throw new Error(`Refusing to recycle invalid path ${relPath}`);
     if (relPath === INTERNAL_DIR_NAME || relPath.startsWith(`${INTERNAL_DIR_NAME}/`)) throw new Error(`Refusing to recycle the internal directory ${relPath}`);
     // Neither the item's folders nor the bin's own may lead out of the root through a symlink:
-    // the actual destination is checked, bucket included, before and after creating its folders.
-    assertWritableInsideRoot(this.root, relPath);
-    const source = path.join(this.root, relPath);
-    const st = statSync(source);
+    // both sides are pinned (ancestors held open) from the check until the move.
+    const source = pinInsideRoot(this.root, relPath);
     const bucket = this.now();
-    const destinationRel = `${INTERNAL_DIR_NAME}/recycle/${String(bucket)}/${relPath}`;
-    assertWritableInsideRoot(this.root, destinationRel);
     let destination = this.destinationFor(relPath, bucket);
-    mkdirSync(path.dirname(destination), { recursive: true });
-    assertWritableInsideRoot(this.root, destinationRel);
-    for (let i = 1; ; i++) {
+    let st;
+    try {
+      st = statSync(source.path);
+      const pinned = pinInsideRoot(this.root, `${INTERNAL_DIR_NAME}/recycle/${String(bucket)}/${relPath}`);
       try {
-        lstatSync(destination);
-        destination = `${this.destinationFor(relPath, bucket)}.${String(i)}`;
-      } catch {
-        break;
+        let to = pinned.path;
+        for (let i = 1; ; i++) {
+          try {
+            lstatSync(to);
+            to = `${pinned.path}.${String(i)}`;
+            destination = `${this.destinationFor(relPath, bucket)}.${String(i)}`;
+          } catch {
+            break;
+          }
+        }
+        renameSync(source.path, to);
+      } finally {
+        pinned.close();
       }
+    } finally {
+      source.close();
     }
-    renameSync(source, destination);
     const kind = st.isDirectory() ? 'dir' : 'file';
     this.audit.append({ kind: 'execute', op: 'recycle_local', message: `recycled ${kind} ${relPath} (${reason})`, path: relPath, outcome: 'ok', details: { destination, bucket } });
     return { bucket, relPath, absolutePath: destination, kind };

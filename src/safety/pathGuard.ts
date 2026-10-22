@@ -9,7 +9,7 @@
  * check runs again immediately before the write, so a symlink that appears in
  * between is caught too.
  */
-import { lstatSync } from 'node:fs';
+import { closeSync, constants, lstatSync, mkdirSync, openSync } from 'node:fs';
 import path from 'node:path';
 
 import type { Blocked, Operation, Plan } from '../reconcile/types.js';
@@ -53,6 +53,52 @@ export function assertWritableInsideRoot(root: string, relPath: string): void {
     const at = parts.slice(0, i + 1).join('/');
     if (st.isSymbolicLink()) throw new UnsafePathError(relPath, `${at} is a symlink`);
     if (!st.isDirectory()) throw new UnsafePathError(relPath, `${at} is not a directory`);
+  }
+}
+
+export interface PinnedPath {
+  /** Addresses the final component through the held ancestor descriptor; valid until `close()`. */
+  path: string;
+  close(): void;
+}
+
+/**
+ * Like `assertWritableInsideRoot`, but holds the ancestors open: each one is
+ * opened with O_NOFOLLOW from its parent's descriptor (missing ones are created
+ * first), and the returned path reaches the target through that descriptor. A
+ * stat or rename through it cannot be redirected by swapping an ancestor for a
+ * symlink between the check and the write. Linux only (`/proc/self/fd`).
+ */
+export function pinInsideRoot(root: string, relPath: string): PinnedPath {
+  const parts = partsOf(relPath);
+  const fds: number[] = [];
+  const close = (): void => { fds.forEach(closeSync); };
+  try {
+    let fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY);
+    fds.push(fd);
+    for (let i = 0; i < parts.length - 1; i++) {
+      const next = `/proc/self/fd/${String(fd)}/${parts[i] ?? ''}`;
+      try {
+        mkdirSync(next);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      try {
+        fd = openSync(next, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ELOOP' && code !== 'ENOTDIR') throw error;
+        const at = parts.slice(0, i + 1).join('/');
+        // O_DIRECTORY|O_NOFOLLOW reports a symlink as ENOTDIR too; lstat tells the two apart.
+        const isLink = ((): boolean => { try { return lstatSync(next).isSymbolicLink(); } catch { return false; } })();
+        throw new UnsafePathError(relPath, isLink ? `${at} is a symlink` : `${at} is not a directory`);
+      }
+      fds.push(fd);
+    }
+    return { path: `/proc/self/fd/${String(fd)}/${parts[parts.length - 1] ?? ''}`, close };
+  } catch (error) {
+    close();
+    throw error;
   }
 }
 
