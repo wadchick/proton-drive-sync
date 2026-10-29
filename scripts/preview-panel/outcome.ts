@@ -60,7 +60,8 @@ export function readRun(run: QuickshellRun, names: readonly string[]): RunOutcom
   }
 
   const shots: Shots = new Map();
-  for (const match of log.matchAll(/panel-preview: saved (\S+\.png)/g)) {
+  // The rest of the line is the path, which may contain spaces.
+  for (const match of log.matchAll(/panel-preview: saved (.+\.png)[ \t]*$/gm)) {
     const path = match[1] ?? '';
     const name = basename(path, '.png').replace(/-scrolled$/, '');
     if (!names.includes(name)) continue;
