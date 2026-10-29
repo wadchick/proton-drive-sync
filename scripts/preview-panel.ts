@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { initialStatus, summarize, type EngineStatus } from '../src/engine/status.js';
 import type { ConflictEntry, QuarantineEntry } from '../src/state/misc.js';
+import { clearShots, readRun, type Shots } from './preview-panel/outcome.js';
 
 const REPO = resolve(import.meta.dirname, '..');
 const HARNESS = join(REPO, 'scripts', 'preview-panel');
@@ -201,8 +202,8 @@ function panelFile(rel: string, rev: string | undefined): string {
   return shown.stdout;
 }
 
-/** Render every wanted scenario of one panel version into `outDir`. Returns the files written. */
-function render(rev: string | undefined, outDir: string): string[] {
+/** Render every wanted scenario of one panel version into `outDir`. Returns the shots this run saved. */
+function render(rev: string | undefined, outDir: string): Shots {
   const work = mkdtempSync(join(tmpdir(), 'panel-preview-qs-'));
   try {
     // The harness folder is a Quickshell config: `qs.Commons` and `qs.Ui` resolve to its
@@ -225,6 +226,8 @@ function render(rev: string | undefined, outDir: string): string[] {
     writeFileSync(join(work, 'Scenarios.js'), `.pragma library\nvar LAUNCHER = ${JSON.stringify(LAUNCHER)}\nvar LIST = ${JSON.stringify(list)}\n`);
 
     mkdirSync(outDir, { recursive: true });
+    const blocked = clearShots(outDir, wanted.map(fileName));
+    if (blocked !== null) fail(blocked);
     const run = spawnSync('qs', ['-p', join(work, 'shell.qml')], {
       encoding: 'utf8',
       timeout: 120_000,
@@ -237,25 +240,23 @@ function render(rev: string | undefined, outDir: string): string[] {
         PANEL_PREVIEW_SCREEN_H: screenH,
       },
     });
-    // Quickshell colors its log; drop the color codes (ESC [ ... m).
-    const log = `${run.stdout}\n${run.stderr}`.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+    const outcome = readRun(run, wanted.map(fileName));
     // Warnings from the panel itself are worth seeing; the shell's own startup chatter is not.
-    for (const line of log.split('\n')) {
+    for (const line of outcome.log.split('\n')) {
       if (line.includes('plugin/Panel.qml') || line.includes('panel-preview: failed')) console.log(`  ${line.trim()}`);
     }
-    const saved = [...log.matchAll(/panel-preview: saved (\S+)/g)].map((m) => m[1] ?? '');
-    if (run.error !== undefined || saved.length === 0) {
-      fail(`Quickshell did not produce any screenshots${run.error ? ` (${run.error.message})` : ''}. Its output:\n${log}`);
-    }
-    return saved;
+    if (!outcome.ok) fail(outcome.showLog ? `${outcome.message} Its output:\n${outcome.log}` : outcome.message);
+    return outcome.shots;
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
 }
 
-/** One image per scenario: `left` beside `right`, each under its label. */
-function pairUp(leftDir: string, leftLabel: string, rightDir: string, rightLabel: string, outDir: string): void {
+/** One image per scenario: `left` beside `right`, each under its label. Uses only this run's shots. */
+function pairUp(left: Shots, leftLabel: string, right: Shots, rightLabel: string, outDir: string): void {
   mkdirSync(outDir, { recursive: true });
+  const blocked = clearShots(outDir, wanted.map(fileName));
+  if (blocked !== null) fail(blocked);
   const bg = '#15171c';
   const font = spawnSync('fc-match', ['-f', '%{file}', 'monospace:bold'], { encoding: 'utf8' }).stdout.trim();
   const labelled = (images: string[], label: string): string[] => [
@@ -263,16 +264,14 @@ function pairUp(leftDir: string, leftLabel: string, rightDir: string, rightLabel
     '-background', bg, '-gravity', 'center', '-append',
     ...(font ? ['-font', font] : []), '-fill', '#d8dee9', '-pointsize', '30', '-gravity', 'north', '-splice', '0x70', '-annotate', '+0+18', label, ')',
   ];
-  const shots = (dir: string, name: string): string[] =>
-    [join(dir, `${name}.png`), join(dir, `${name}-scrolled.png`)].filter((f) => existsSync(f));
   for (const name of wanted.map(fileName)) {
-    const left = shots(leftDir, name);
-    const right = shots(rightDir, name);
-    if (left.length === 0 || right.length === 0) continue;
+    // render() has already checked that every scenario has its card shot on both sides.
+    const leftShots = left.get(name) ?? [];
+    const rightShots = right.get(name) ?? [];
     const scrolled = (files: string[], label: string): string => (files.length > 1 ? `${label} (top, then scrolled)` : label);
     const made = spawnSync('magick', [
-      ...labelled(left, scrolled(left, leftLabel)),
-      ...labelled(right, scrolled(right, rightLabel)),
+      ...labelled(leftShots, scrolled(leftShots, leftLabel)),
+      ...labelled(rightShots, scrolled(rightShots, rightLabel)),
       '-background', bg, '-gravity', 'north', '+smush', '60', '-bordercolor', bg, '-border', '40', join(outDir, `${name}.png`),
     ], { encoding: 'utf8' });
     if (made.status !== 0) fail(`ImageMagick could not make the ${name} pair: ${made.stderr.trim()}`);
@@ -281,12 +280,13 @@ function pairUp(leftDir: string, leftLabel: string, rightDir: string, rightLabel
 
 const out = outOption !== undefined ? resolve(outOption) : mkdtempSync(join(tmpdir(), 'panel-preview-'));
 if (compare === undefined) {
-  const saved = render(ref, out);
-  console.log(`${String(saved.length)} screenshot(s) of ${ref ?? 'the working tree'}'s panel in ${out}`);
+  const shots = render(ref, out);
+  const count = [...shots.values()].reduce((n, list) => n + list.length, 0);
+  console.log(`${String(count)} screenshot(s) of ${ref ?? 'the working tree'}'s panel in ${out}`);
 } else {
   const slug = compare.replace(/[^A-Za-z0-9._-]+/g, '-');
-  render(compare, join(out, slug));
-  render(undefined, join(out, 'working-tree'));
-  pairUp(join(out, slug), compare, join(out, 'working-tree'), 'working tree', join(out, 'pairs'));
+  const left = render(compare, join(out, slug));
+  const right = render(undefined, join(out, 'working-tree'));
+  pairUp(left, compare, right, 'working tree', join(out, 'pairs'));
   console.log(`Pairs (${compare} left, working tree right) in ${join(out, 'pairs')}; the single shots are beside them.`);
 }

@@ -22,7 +22,7 @@ It prints where the screenshots went and exits. By default that's a new folder u
 
 | Option | Does |
 | --- | --- |
-| `--out <dir>` | Write the screenshots here instead of a new temp folder |
+| `--out <dir>` | Write the screenshots here instead of a new temp folder. Rendering into a folder again replaces the earlier shots of the scenarios rendered |
 | `--ref <ref>` | Render `omarchy/Panel.qml` and `omarchy/Model.js` from a git ref instead of the working tree |
 | `--compare <ref>` | Render the ref and the working tree, and put each pair side by side in `pairs/`. Needs ImageMagick |
 | `--scale <n>` | Device pixel ratio, default `2` |
@@ -68,3 +68,5 @@ Nothing: this takes screenshots and exits. The stand-in service only logs action
 The scenarios are defined in [`preview-panel.ts`](preview-panel.ts), in the `SCENARIOS` list. Each one sets what `doctor --json`, `status --json`, `conflicts --json` and `quarantine --json` would return. Copy an existing entry to add a new one. Its number comes from its place in the list.
 
 If the panel starts reading a new property or action from the service, add it to the stand-in service in [`preview-panel/shell.qml`](preview-panel/shell.qml).
+
+How a run is judged (every scenario saved, no failed save, a clean exit, and only this run's files counted) lives in [`preview-panel/outcome.ts`](preview-panel/outcome.ts) and is tested in [`src/cli/previewPanel.test.ts`](../src/cli/previewPanel.test.ts).
