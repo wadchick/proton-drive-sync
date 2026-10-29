@@ -46,6 +46,16 @@ export function clearShots(dir: string, names: readonly string[]): string | null
 }
 
 /**
+ * A line the harness printed: "panel-preview: saved <path>" or "panel-preview: failed <what>".
+ * Only the first marker on a line counts, so a path that happens to contain one isn't misread.
+ */
+export function harnessLine(line: string): { kind: 'saved' | 'failed'; rest: string } | null {
+  const match = /^.*?panel-preview: (saved|failed) (.*?)[ \t]*$/.exec(line);
+  if (match === null) return null;
+  return { kind: match[1] === 'saved' ? 'saved' : 'failed', rest: match[2] ?? '' };
+}
+
+/**
  * Read a finished Quickshell run. Only the files the harness reports as saved in this run
  * count, never whatever else is in the folder. Every named scenario must have its card shot,
  * and a failed save or an abnormal exit fails the whole run.
@@ -53,16 +63,16 @@ export function clearShots(dir: string, names: readonly string[]): string | null
 export function readRun(run: QuickshellRun, names: readonly string[]): RunOutcome {
   const log = stripColors(`${run.stdout}\n${run.stderr}`);
   if (run.error !== undefined) return { ok: false, message: `Quickshell could not run or did not finish (${run.error.message}).`, showLog: true, log };
-  if (log.includes('panel-preview: failed')) return { ok: false, message: 'Some screenshots could not be saved; see the lines above.', showLog: false, log };
+  const lines = log.split('\n').map(harnessLine).filter((l) => l !== null);
+  if (lines.some((l) => l.kind === 'failed')) return { ok: false, message: 'Some screenshots could not be saved; see the lines above.', showLog: false, log };
   if (run.status !== 0) {
     const how = run.signal !== null ? `was stopped by ${run.signal}` : `exited with status ${String(run.status)}`;
     return { ok: false, message: `Quickshell ${how}.`, showLog: true, log };
   }
 
   const shots: Shots = new Map();
-  // The rest of the line is the path, which may contain spaces.
-  for (const match of log.matchAll(/panel-preview: saved (.+\.png)[ \t]*$/gm)) {
-    const path = match[1] ?? '';
+  // The rest of a saved line is the path, which may contain spaces.
+  for (const { rest: path } of lines.filter((l) => l.kind === 'saved' && l.rest.endsWith('.png'))) {
     const name = basename(path, '.png').replace(/-scrolled$/, '');
     if (!names.includes(name)) continue;
     const list = shots.get(name) ?? [];

@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { initialStatus, summarize, type EngineStatus } from '../src/engine/status.js';
 import type { ConflictEntry, QuarantineEntry } from '../src/state/misc.js';
-import { clearShots, readRun, type Shots } from './preview-panel/outcome.js';
+import { clearShots, harnessLine, readRun, type Shots } from './preview-panel/outcome.js';
 
 const REPO = resolve(import.meta.dirname, '..');
 const HARNESS = join(REPO, 'scripts', 'preview-panel');
@@ -243,7 +243,7 @@ function render(rev: string | undefined, outDir: string): Shots {
     const outcome = readRun(run, wanted.map(fileName));
     // Warnings from the panel itself are worth seeing; the shell's own startup chatter is not.
     for (const line of outcome.log.split('\n')) {
-      if (line.includes('plugin/Panel.qml') || line.includes('panel-preview: failed')) console.log(`  ${line.trim()}`);
+      if (line.includes('plugin/Panel.qml') || harnessLine(line)?.kind === 'failed') console.log(`  ${line.trim()}`);
     }
     if (!outcome.ok) fail(outcome.showLog ? `${outcome.message} Its output:\n${outcome.log}` : outcome.message);
     return outcome.shots;

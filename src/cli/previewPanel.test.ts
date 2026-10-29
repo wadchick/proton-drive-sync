@@ -28,6 +28,12 @@ describe('preview-panel: reading a Quickshell run', () => {
     expect(outcome.ok && outcome.shots.get('01-idle')).toEqual(['/tmp/my shots/01-idle.png', '/tmp/my shots/01-idle-scrolled.png']);
   });
 
+  it('is not misled by an output path that contains the harness’s own markers', () => {
+    const dir = '/tmp/panel-preview: failed';
+    const outcome = readRun(run([saved(`${dir}/01-idle.png`)]), ['01-idle']);
+    expect(outcome.ok && outcome.shots.get('01-idle')).toEqual([`${dir}/01-idle.png`]);
+  });
+
   it('fails the run when one save failed, even though another scenario saved', () => {
     const outcome = readRun(run([saved('/out/01-idle.png'), failed('/out/02-syncing.png')]), ['01-idle', '02-syncing']);
     expect(outcome).toMatchObject({ ok: false, message: 'Some screenshots could not be saved; see the lines above.' });
